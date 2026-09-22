@@ -10,6 +10,8 @@ use std::path::PathBuf;
 use crossterm::event::KeyModifiers;
 use serde::{Deserialize, Serialize};
 
+use crate::background::scenes::SceneChoice;
+use crate::background::BackgroundKind;
 use crate::engine::modern::game::{
     Settings as ModernSettings, DEFAULT_ARR_FRAMES, DEFAULT_DAS_FRAMES,
 };
@@ -37,6 +39,10 @@ pub struct Config {
     pub theme: Theme,
     pub skin: Skin,
     pub border: BorderStyle,
+    pub background: BackgroundKind,
+    /// Which still scene the `Scene` background shows; `Random` picks one per
+    /// session.
+    pub scene: SceneChoice,
     /// Name offered first in the high-score entry field, so a player who always
     /// uses the same one only types it once.
     pub player_name: String,
@@ -56,6 +62,8 @@ impl Default for Config {
             theme: Theme::default(),
             skin: Skin::default(),
             border: BorderStyle::default(),
+            background: BackgroundKind::default(),
+            scene: SceneChoice::default(),
             player_name: "player".into(),
             bindings: default_bindings(),
         }

@@ -9,9 +9,10 @@ The full design, including every researched rule value and its source, is in
 
 ## Status
 
-Both modes are playable, with menus, rebindable keys, saved high scores and
-selectable visuals. The animated backgrounds are not built yet — see the phase
-table in `brief.md` §13.
+Both modes are playable, with menus, rebindable keys, saved high scores,
+selectable visuals and the first of the backgrounds. The animated backgrounds
+(matrix rain, pipes, bonsai, nyancat, aquarium, the reactive cow) are not built
+yet — see the phase table in `brief.md` §13.
 
 Done so far:
 
@@ -34,6 +35,9 @@ Done so far:
 - Three independent visual axes: colour theme, tetromino skin and board border,
   including plain-ASCII and letter-per-cell options for terminals with poor
   Unicode or colour support
+- Background layer, with the still ones built: blank (keeps terminal
+  transparency), bundled scenes, and your distribution's logo tiled behind the
+  field. It runs on the title screen too, as attract mode
 
 ## Running
 
@@ -94,6 +98,9 @@ changes:
   `Letters` (the piece's own letter, which identifies pieces without colour)
 - **Board border** — `None`, `ASCII`, `Single`, `Double`, `Rounded` or `Heavy`,
   applied to the menus as well as the board
+- **Background** — `Blank`, `Scene` (with a scene picker, or `Random` for one per
+  session) or `Distro logo`, read from `/etc/os-release`. Backgrounds never draw
+  inside the playfield or the HUD panels
 - **Key bindings** — `Enter` on a row, then press the key. A key already bound to
   something else is refused rather than silently stolen
 
@@ -101,7 +108,7 @@ changes:
 
 | Path | Contents |
 |---|---|
-| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, theme, skin, border, bindings |
+| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, theme, skin, border, background, bindings |
 | `~/.local/share/tetris-tui/scores.toml` | two top-10 tables, NES and modern kept apart |
 
 Both are plain TOML and meant to be hand-editable. A missing or corrupt file

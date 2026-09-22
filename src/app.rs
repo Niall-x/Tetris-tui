@@ -27,6 +27,8 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
+use crate::background::scenes::SceneChoice;
+use crate::background::{Background, BackgroundKind, Canvas, ClearKind, PerformanceSignal};
 use crate::config::Config;
 use crate::game::{Game, Input, Mode};
 use crate::input::action::Action;
@@ -81,6 +83,12 @@ pub struct App {
     /// Whether settings and scores are written to disk. Off in tests, which must
     /// not touch the player's real files.
     persist: bool,
+    background: Box<dyn Background>,
+    /// What the background was built from, so it is rebuilt only when the setting
+    /// actually changes rather than every frame.
+    background_source: (BackgroundKind, SceneChoice),
+    /// The most recent placement's clear, which reactive backgrounds read.
+    last_clear: ClearKind,
 }
 
 impl App {
@@ -96,6 +104,9 @@ impl App {
             start_level: config.start_level(config.mode),
             options_origin: OptionsOrigin::Title,
             persist: true,
+            background: config.background.create(config.scene),
+            background_source: (config.background, config.scene),
+            last_clear: ClearKind::None,
             scores,
             config,
         }
@@ -140,6 +151,13 @@ impl App {
         // Rebinding applies immediately; the modern timing settings are read when
         // a run starts, so changing them mid-run affects the next one.
         self.keymap = self.config.keymap();
+        // Rebuilding re-rolls a random scene, so it must happen only when the
+        // background setting itself changed.
+        let wanted = (self.config.background, self.config.scene);
+        if wanted != self.background_source {
+            self.background = self.config.background.create(self.config.scene);
+            self.background_source = wanted;
+        }
         self.save_config();
     }
 
@@ -363,13 +381,22 @@ impl App {
             } else {
                 let input = self.frame_input(now);
                 if let Some(game) = &mut self.game {
-                    game.tick(input);
+                    let events = game.tick(input);
+                    // Remembered rather than consumed here: a background reads it
+                    // when it next draws, which is after this tick.
+                    if events.piece_locked {
+                        self.last_clear = ClearKind::from_lines(events.lines_cleared);
+                    }
                 }
                 if self.game.as_ref().is_some_and(Game::is_over) {
                     self.enter_game_over();
                 }
             }
         }
+
+        // The background animates on every screen, so the title screen's attract
+        // mode runs at the same rate as gameplay.
+        self.background.tick(TICK);
 
         self.pressed.clear();
         self.held.expire(now);
@@ -392,9 +419,18 @@ impl App {
         // The board stays on screen behind the pause, game-over and (when a run is
         // in progress) options screens, so the stack the player is mid-way through
         // never disappears under a menu.
-        let board_area = match (&self.state, &self.game) {
+        let plan = match (&self.state, &self.game) {
             (AppState::Title(_) | AppState::HighScores(_), _) | (_, None) => None,
-            (_, Some(game)) => self.draw_play(frame, game),
+            (_, Some(game)) => Some(layout::compute(area, game.preview().len())),
+        };
+
+        // The background goes down first and keeps clear of wherever the board and
+        // its panels are about to be drawn.
+        self.draw_background(frame, area, plan.as_ref());
+
+        let board_area = match (plan, &self.game) {
+            (Some(plan), Some(game)) => self.draw_play(frame, game, plan),
+            _ => None,
         };
         let overlay_area = board_area.unwrap_or(area);
 
@@ -426,11 +462,32 @@ impl App {
         }
     }
 
+    /// Draws whatever is behind everything else, keeping out of the board and
+    /// HUD panels: those widgets paint only the cells they write, so anything
+    /// underneath would show through their blank space.
+    fn draw_background(&self, frame: &mut Frame, area: Rect, plan: Option<&layout::Layout>) {
+        let mut reserved: Vec<Rect> = Vec::new();
+        if let Some(plan) = plan.filter(|plan| plan.tier != layout::Tier::TooSmall) {
+            reserved.push(plan.board);
+            reserved.extend(
+                [plan.stats, plan.next, plan.piece_counts]
+                    .into_iter()
+                    .flatten(),
+            );
+        }
+
+        let signal = match &self.game {
+            Some(game) => PerformanceSignal::of(game, self.last_clear),
+            None => PerformanceSignal::default(),
+        };
+        let visuals = self.config.visuals();
+        let mut canvas = Canvas::new(frame.buffer_mut(), area, &reserved);
+        self.background.render(&mut canvas, &visuals, &signal);
+    }
+
     /// Draws the playfield and its panels, returning the board's interior so an
     /// overlay can be centred on it rather than on the whole terminal.
-    fn draw_play(&self, frame: &mut Frame, game: &Game) -> Option<Rect> {
-        let plan = layout::compute(frame.area(), game.preview().len());
-
+    fn draw_play(&self, frame: &mut Frame, game: &Game, plan: layout::Layout) -> Option<Rect> {
         if plan.tier == layout::Tier::TooSmall {
             let message = format!(
                 "Terminal too small\n\nNeed at least {}x{}",
@@ -988,6 +1045,116 @@ mod tests {
         println!("{rendered}");
         assert!(rendered.contains("PAUSED"));
         assert!(rendered.contains("SCORE"), "the HUD is still drawn");
+    }
+
+    /// The background runs on the title screen too — that is what attract mode is.
+    #[test]
+    fn a_background_draws_behind_the_title_screen() {
+        let mut app = title_app();
+        app.config.background = BackgroundKind::Scene;
+        app.config.scene = SceneChoice::Mountains;
+        app.apply_config();
+
+        let rendered = render_to_string(&app, 80, 30);
+        println!("{rendered}");
+        assert!(rendered.contains('~'), "the scene's horizon is missing");
+        assert!(rendered.contains("Play"), "the menu is still on top");
+    }
+
+    /// A background that leaked into the playfield or the HUD would make both
+    /// harder to read, which is the one thing it must not do.
+    #[test]
+    fn a_background_never_draws_over_the_board_or_its_panels() {
+        use ratatui::backend::TestBackend;
+
+        let mut app = App::headless(Mode::Nes, 0, TimingMode::Precise);
+        app.config.background = BackgroundKind::DistroLogo;
+        app.apply_config();
+        for _ in 0..60 {
+            app.tick(Instant::now());
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let plan = layout::compute(Rect::new(0, 0, 90, 30), 1);
+        let board_interior = Rect::new(
+            plan.board.x + 1,
+            plan.board.y + 1,
+            plan.board.width - 2,
+            plan.board.height - 2,
+        );
+        for y in board_interior.y..board_interior.bottom() {
+            for x in board_interior.x..board_interior.right() {
+                let symbol = buffer[(x, y)].symbol();
+                assert!(
+                    symbol == "·" || symbol == " " || symbol == "█",
+                    "({x}, {y}) holds {symbol:?}, which is not board content"
+                );
+            }
+        }
+
+        // The stats panel's own text must survive too.
+        let rendered = render_to_string(&app, 90, 30);
+        println!("{rendered}");
+        assert!(rendered.contains("SCORE"));
+        assert!(rendered.contains("STATS"));
+    }
+
+    /// Rebuilding re-rolls a random scene, so it must happen only when the
+    /// background setting actually changed.
+    #[test]
+    fn the_background_is_rebuilt_only_when_its_setting_changes() {
+        let mut app = title_app();
+        assert_eq!(app.background.name(), "Blank");
+
+        app.config.background = BackgroundKind::Scene;
+        app.apply_config();
+        assert_eq!(app.background.name(), "Scene");
+
+        app.config.das_frames += 1;
+        app.apply_config();
+        assert_eq!(
+            app.background.name(),
+            "Scene",
+            "unchanged by other settings"
+        );
+    }
+
+    /// Reactive backgrounds read the last clear; it has to be recorded as the
+    /// placement happens, since the background only draws afterwards.
+    #[test]
+    fn the_last_clear_is_recorded_for_reactive_backgrounds() {
+        let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
+        assert_eq!(app.last_clear, ClearKind::None);
+
+        // Fill the bottom row everywhere except under the current piece, so one
+        // hard drop completes it whatever piece the bag dealt.
+        let game = app.game.as_ref().unwrap();
+        let piece = game.current().unwrap();
+        let cells = game.cells_of(piece);
+        let lowest = cells.iter().map(|cell| cell.1).max().unwrap();
+        let gap: Vec<i32> = cells
+            .iter()
+            .filter(|cell| cell.1 == lowest)
+            .map(|cell| cell.0)
+            .collect();
+
+        let board = app.game.as_mut().unwrap().board_mut();
+        let bottom = board.height() as i32 - 1;
+        for x in 0..board.width() as i32 {
+            if !gap.contains(&x) {
+                board.set(x, bottom, Some(crate::engine::piece::PieceKind::O));
+            }
+        }
+
+        send(&mut app, KeyCode::Char(' '));
+        assert_eq!(
+            app.last_clear,
+            ClearKind::Single,
+            "a filled row should have registered as a single"
+        );
     }
 
     #[test]

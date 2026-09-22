@@ -156,6 +156,8 @@ fn option_value(row: OptionRow, config: &Config, keymap: &Keymap) -> String {
         OptionRow::Theme => config.theme.label().to_string(),
         OptionRow::Skin => config.skin.label().to_string(),
         OptionRow::Border => config.border.label().to_string(),
+        OptionRow::Background => config.background.label().to_string(),
+        OptionRow::Scene => config.scene.label().to_string(),
         OptionRow::Bind(action) => {
             let mut keys: Vec<String> = keymap
                 .keys_for(action)
@@ -182,6 +184,8 @@ fn option_label(row: OptionRow) -> String {
         OptionRow::Theme => "Colour theme".into(),
         OptionRow::Skin => "Tetromino skin".into(),
         OptionRow::Border => "Board border".into(),
+        OptionRow::Background => "Background".into(),
+        OptionRow::Scene => "  scene".into(),
         OptionRow::Bind(action) => action.label().to_string(),
     }
 }
@@ -241,6 +245,9 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
         )));
     } else if menu.rebinding.is_some() {
         lines.push(dim("press a key to bind, esc to cancel"));
+    } else if rows[menu.selected.min(rows.len() - 1)] == OptionRow::Background {
+        // §9: the background list is the one row whose choices need explaining.
+        lines.push(dim(config.background.description()));
     } else {
         lines.push(dim("←→ change · enter rebind · esc back"));
     }

@@ -1,4 +1,5 @@
 pub mod app;
+pub mod background;
 pub mod config;
 pub mod engine;
 pub mod game;

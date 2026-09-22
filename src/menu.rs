@@ -11,6 +11,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::background::scenes::SceneChoice;
+use crate::background::BackgroundKind;
 use crate::config::Config;
 use crate::game::Mode;
 use crate::input::action::Action;
@@ -196,6 +198,9 @@ pub enum OptionRow {
     Theme,
     Skin,
     Border,
+    Background,
+    /// Only shown while the scene background is the selected one.
+    Scene,
     Bind(Action),
 }
 
@@ -228,6 +233,11 @@ impl OptionsMenu {
         // The visual axes are independent of the ruleset, so they are offered in
         // both modes.
         rows.extend([OptionRow::Theme, OptionRow::Skin, OptionRow::Border]);
+        rows.push(OptionRow::Background);
+        // The scene picker is meaningless unless the scene background is showing.
+        if config.background == BackgroundKind::Scene {
+            rows.push(OptionRow::Scene);
+        }
         rows.extend(Action::ALL.map(OptionRow::Bind));
         rows
     }
@@ -305,6 +315,13 @@ impl OptionsMenu {
             OptionRow::Theme => config.theme = cycle(config.theme, &Theme::ALL, forward),
             OptionRow::Skin => config.skin = cycle(config.skin, &Skin::ALL, forward),
             OptionRow::Border => config.border = cycle(config.border, &BorderStyle::ALL, forward),
+            OptionRow::Background => {
+                config.background = cycle(config.background, &BackgroundKind::ALL, forward);
+                // Leaving the scene background removes a row below this one.
+                let len = Self::rows(config).len();
+                self.selected = self.selected.min(len - 1);
+            }
+            OptionRow::Scene => config.scene = cycle(config.scene, &SceneChoice::ALL, forward),
             // Rebinding is driven by `capture`, not by the direction keys.
             OptionRow::Bind(_) => return OptionsOutcome::Stay,
         }
