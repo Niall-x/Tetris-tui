@@ -24,7 +24,7 @@ use crossterm::{execute, ExecutableCommand};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::config::Config;
@@ -402,14 +402,26 @@ impl App {
             AppState::Playing => {}
             AppState::Title(menu) => menu_ui::render_title(frame, area, menu, self.config.mode),
             AppState::Options(menu) => menu_ui::render_options(frame, area, menu, &self.config),
-            AppState::HighScores(view) => menu_ui::render_scores(frame, area, view, &self.scores),
-            AppState::Paused(menu) => menu_ui::render_pause(frame, overlay_area, menu),
+            AppState::HighScores(view) => {
+                menu_ui::render_scores(frame, area, view, &self.scores, self.config.border)
+            }
+            AppState::Paused(menu) => {
+                menu_ui::render_pause(frame, overlay_area, menu, self.config.border)
+            }
             AppState::GameOver(menu) => {
                 let (score, lines, level) = match &self.game {
                     Some(game) => (game.score(), game.lines(), game.level()),
                     None => (0, 0, 0),
                 };
-                menu_ui::render_game_over(frame, overlay_area, menu, score, lines, level);
+                menu_ui::render_game_over(
+                    frame,
+                    overlay_area,
+                    menu,
+                    score,
+                    lines,
+                    level,
+                    self.config.border,
+                );
             }
         }
     }
@@ -434,23 +446,25 @@ impl App {
             return None;
         }
 
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {} ", game.mode().label()))
-            .border_style(Style::default().fg(Color::DarkGray));
+        let visuals = self.config.visuals();
+        let block = visuals.border.apply(
+            Block::default()
+                .title(format!(" {} ", game.mode().label()))
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
         let interior = block.inner(plan.board);
         frame.render_widget(block, plan.board);
 
-        board_view::render(frame.buffer_mut(), interior, game);
+        board_view::render(frame.buffer_mut(), interior, game, &visuals);
 
         if let Some(area) = plan.stats {
-            hud::render_stats(frame, area, game, self.held.mode().label());
+            hud::render_stats(frame, area, game, self.held.mode().label(), &visuals);
         }
         if let Some(area) = plan.next {
-            hud::render_next(frame, area, game);
+            hud::render_next(frame, area, game, &visuals);
         }
         if let Some(area) = plan.piece_counts {
-            hud::render_side_panel(frame, area, game);
+            hud::render_side_panel(frame, area, game, &visuals);
         }
 
         Some(interior)

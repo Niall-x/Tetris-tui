@@ -443,6 +443,8 @@ Ordered to de-risk rules-accuracy first, cosmetics last.
 
 ### Still open
 
+- **OSC palette detection is not implemented** (§7.1). The `SystemAnsi` theme emits symbolic 16-colour codes, which the terminal already renders from the user's own palette, so the visible result is what §7.1 describes as the fallback. Querying OSC 4/10/11 would only add the ability to *choose* slots by measured separation, and it needs raw-mode stdin parsing that fights the event loop for the same bytes — worth doing only if real palettes turn out to make pieces hard to tell apart.
+
 - Exact NES ARE row-boundary cutoffs beyond the documented delta pattern (§3.4).
 - Exact NES line-clear animation delay/frame-parity table (§3.4) — currently a flat 18 frames.
 - NES soft-drop rate (§3.4) — implemented as one row per 2 frames, the commonly cited figure, not confirmed against a disassembly.

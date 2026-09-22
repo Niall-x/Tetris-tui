@@ -8,10 +8,10 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use super::board_view::piece_color;
+use super::style::{CellRole, Visuals};
 use crate::engine::modern::srs;
 use crate::engine::nes::rotation as nrs;
 use crate::engine::piece::PieceKind;
@@ -27,7 +27,13 @@ fn labelled(label: &str, value: String) -> Line<'static> {
     ])
 }
 
-pub fn render_stats(frame: &mut Frame, area: Rect, game: &Game, timing_label: &str) {
+pub fn render_stats(
+    frame: &mut Frame,
+    area: Rect,
+    game: &Game,
+    timing_label: &str,
+    visuals: &Visuals,
+) {
     let mut lines = vec![
         labelled("SCORE", game.score().to_string()),
         labelled("LEVEL", game.level().to_string()),
@@ -55,14 +61,14 @@ pub fn render_stats(frame: &mut Frame, area: Rect, game: &Game, timing_label: &s
 
     // The board's border already names the mode, so this panel does not repeat it.
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" SCORE ")),
+        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" SCORE "))),
         area,
     );
 }
 
 /// Draw a piece using the same two-columns-per-cell mapping as the board, so
 /// previews do not look distorted beside it.
-fn preview_lines(kind: PieceKind, mode: Mode) -> Vec<Line<'static>> {
+fn preview_lines(kind: PieceKind, mode: Mode, visuals: &Visuals) -> Vec<Line<'static>> {
     let cells = match mode {
         Mode::Nes => nrs::cells(kind, 0).to_vec(),
         Mode::Modern => srs::cells(kind, 0).to_vec(),
@@ -73,13 +79,15 @@ fn preview_lines(kind: PieceKind, mode: Mode) -> Vec<Line<'static>> {
     let min_y = cells.iter().map(|c| c.1).min().unwrap_or(0);
     let max_y = cells.iter().map(|c| c.1).max().unwrap_or(0);
 
-    let color = piece_color(kind);
+    let color = visuals.theme.color(kind);
+    let glyphs = visuals.skin.cell(kind, CellRole::Filled);
+    let cell = format!("{}{}", glyphs[0], glyphs[1]);
     (min_y..=max_y)
         .map(|y| {
             let spans = (min_x..=max_x)
                 .map(|x| {
                     if cells.contains(&(x, y)) {
-                        Span::styled("██", Style::default().fg(color))
+                        Span::styled(cell.clone(), Style::default().fg(color))
                     } else {
                         Span::raw("  ")
                     }
@@ -90,14 +98,14 @@ fn preview_lines(kind: PieceKind, mode: Mode) -> Vec<Line<'static>> {
         .collect()
 }
 
-pub fn render_next(frame: &mut Frame, area: Rect, game: &Game) {
+pub fn render_next(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
     let mode = game.mode();
     let mut lines = Vec::new();
 
     // NES previews a single piece; modern shows as much of the queue as fits.
     let room = area.height.saturating_sub(2) as usize;
     for kind in game.preview() {
-        let piece = preview_lines(kind, mode);
+        let piece = preview_lines(kind, mode, visuals);
         if lines.len() + piece.len() + 1 > room {
             break;
         }
@@ -106,23 +114,23 @@ pub fn render_next(frame: &mut Frame, area: Rect, game: &Game) {
     }
 
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" NEXT ")),
+        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" NEXT "))),
         area,
     );
 }
 
 /// The panel whose contents depend entirely on the ruleset: piece statistics for
 /// NES, the hold slot for modern.
-pub fn render_side_panel(frame: &mut Frame, area: Rect, game: &Game) {
+pub fn render_side_panel(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
     match game.mode() {
-        Mode::Nes => render_piece_counts(frame, area, game),
-        Mode::Modern => render_hold(frame, area, game),
+        Mode::Nes => render_piece_counts(frame, area, game, visuals),
+        Mode::Modern => render_hold(frame, area, game, visuals),
     }
 }
 
-fn render_hold(frame: &mut Frame, area: Rect, game: &Game) {
+fn render_hold(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
     let lines = match game.hold_piece() {
-        Some(kind) => preview_lines(kind, game.mode()),
+        Some(kind) => preview_lines(kind, game.mode(), visuals),
         None => vec![Line::from(Span::styled(
             "  empty",
             Style::default().fg(Color::DarkGray),
@@ -130,12 +138,12 @@ fn render_hold(frame: &mut Frame, area: Rect, game: &Game) {
     };
 
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" HOLD ")),
+        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" HOLD "))),
         area,
     );
 }
 
-fn render_piece_counts(frame: &mut Frame, area: Rect, game: &Game) {
+fn render_piece_counts(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
     // The in-game statistics bar order.
     let order = [
         PieceKind::T,
@@ -154,7 +162,7 @@ fn render_piece_counts(frame: &mut Frame, area: Rect, game: &Game) {
                 Line::from(vec![
                     Span::styled(
                         format!("{} ", kind.letter()),
-                        Style::default().fg(piece_color(kind)),
+                        Style::default().fg(visuals.theme.color(kind)),
                     ),
                     Span::styled(format!("{count:>5}"), Style::default().fg(Color::White)),
                 ])
@@ -163,7 +171,7 @@ fn render_piece_counts(frame: &mut Frame, area: Rect, game: &Game) {
         .collect();
 
     frame.render_widget(
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" STATS ")),
+        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" STATS "))),
         area,
     );
 }
@@ -174,7 +182,7 @@ mod tests {
 
     #[test]
     fn previews_use_double_width_cells() {
-        let lines = preview_lines(PieceKind::O, Mode::Nes);
+        let lines = preview_lines(PieceKind::O, Mode::Nes, &Visuals::default());
         assert_eq!(lines.len(), 2, "O is two rows tall");
         let width: usize = lines[0]
             .spans
@@ -188,7 +196,7 @@ mod tests {
     fn preview_covers_every_piece_in_both_modes() {
         for mode in [Mode::Nes, Mode::Modern] {
             for kind in PieceKind::ALL {
-                let lines = preview_lines(kind, mode);
+                let lines = preview_lines(kind, mode, &Visuals::default());
                 assert!(!lines.is_empty(), "{kind:?} in {mode:?} produced nothing");
             }
         }
@@ -197,7 +205,7 @@ mod tests {
     #[test]
     fn i_preview_is_a_single_row_of_four() {
         for mode in [Mode::Nes, Mode::Modern] {
-            let lines = preview_lines(PieceKind::I, mode);
+            let lines = preview_lines(PieceKind::I, mode, &Visuals::default());
             assert_eq!(lines.len(), 1, "{mode:?}");
             let filled = lines[0]
                 .spans
@@ -212,8 +220,8 @@ mod tests {
     /// show each mode's own shape.
     #[test]
     fn previews_reflect_the_modes_own_spawn_orientation() {
-        let nes = preview_lines(PieceKind::T, Mode::Nes);
-        let modern = preview_lines(PieceKind::T, Mode::Modern);
+        let nes = preview_lines(PieceKind::T, Mode::Nes, &Visuals::default());
+        let modern = preview_lines(PieceKind::T, Mode::Modern, &Visuals::default());
         let render = |lines: &[Line]| {
             lines
                 .iter()

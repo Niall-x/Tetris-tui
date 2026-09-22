@@ -15,6 +15,7 @@ use crate::config::Config;
 use crate::game::Mode;
 use crate::input::action::Action;
 use crate::scores::MAX_NAME;
+use crate::ui::style::{BorderStyle, Skin, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuInput {
@@ -192,6 +193,9 @@ pub enum OptionRow {
     Das,
     Arr,
     Ghost,
+    Theme,
+    Skin,
+    Border,
     Bind(Action),
 }
 
@@ -221,6 +225,9 @@ impl OptionsMenu {
         if config.mode == Mode::Modern {
             rows.extend([OptionRow::Das, OptionRow::Arr, OptionRow::Ghost]);
         }
+        // The visual axes are independent of the ruleset, so they are offered in
+        // both modes.
+        rows.extend([OptionRow::Theme, OptionRow::Skin, OptionRow::Border]);
         rows.extend(Action::ALL.map(OptionRow::Bind));
         rows
     }
@@ -295,6 +302,9 @@ impl OptionsMenu {
                 config.arr_frames = nudge(config.arr_frames, forward);
             }
             OptionRow::Ghost => config.ghost = !config.ghost,
+            OptionRow::Theme => config.theme = cycle(config.theme, &Theme::ALL, forward),
+            OptionRow::Skin => config.skin = cycle(config.skin, &Skin::ALL, forward),
+            OptionRow::Border => config.border = cycle(config.border, &BorderStyle::ALL, forward),
             // Rebinding is driven by `capture`, not by the direction keys.
             OptionRow::Bind(_) => return OptionsOutcome::Stay,
         }
@@ -337,6 +347,14 @@ impl OptionsMenu {
             }
         }
     }
+}
+
+/// Step through a fixed list of choices, wrapping at both ends. An unrecognised
+/// current value — a hand-edited config naming something that no longer exists —
+/// lands on the first choice rather than failing.
+fn cycle<T: Copy + PartialEq>(current: T, all: &[T], forward: bool) -> T {
+    let index = all.iter().position(|item| *item == current).unwrap_or(0);
+    all[step(index, all.len(), forward)]
 }
 
 fn nudge(frames: u32, forward: bool) -> u32 {
@@ -659,6 +677,75 @@ mod tests {
             menu.navigate(MenuInput::Right, &mut config);
         }
         assert_eq!(config.arr_frames, MAX_DELAY_FRAMES);
+    }
+
+    /// The visual axes are ruleset-independent, so both modes offer all three.
+    #[test]
+    fn the_visual_rows_are_offered_in_both_modes() {
+        for mode in [Mode::Nes, Mode::Modern] {
+            let rows = OptionsMenu::rows(&config(mode));
+            for row in [OptionRow::Theme, OptionRow::Skin, OptionRow::Border] {
+                assert!(rows.contains(&row), "{row:?} missing in {mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_visual_axes_cycle_and_wrap() {
+        let mut config = config(Mode::Nes);
+        let rows = OptionsMenu::rows(&config);
+        let mut menu = OptionsMenu {
+            selected: rows.iter().position(|r| *r == OptionRow::Skin).unwrap(),
+            ..Default::default()
+        };
+
+        assert_eq!(config.skin, Skin::SolidBlock);
+        assert_eq!(
+            menu.navigate(MenuInput::Right, &mut config),
+            OptionsOutcome::Changed
+        );
+        assert_eq!(config.skin, Skin::Shaded);
+
+        // All the way round lands back where it started.
+        for _ in 1..Skin::ALL.len() {
+            menu.navigate(MenuInput::Right, &mut config);
+        }
+        assert_eq!(config.skin, Skin::SolidBlock);
+
+        // And backwards wraps to the far end.
+        menu.navigate(MenuInput::Left, &mut config);
+        assert_eq!(config.skin, *Skin::ALL.last().unwrap());
+    }
+
+    #[test]
+    fn theme_and_border_cycle_independently_of_each_other() {
+        let mut config = config(Mode::Nes);
+        let rows = OptionsMenu::rows(&config);
+        let theme_row = rows.iter().position(|r| *r == OptionRow::Theme).unwrap();
+        let mut menu = OptionsMenu {
+            selected: theme_row,
+            ..Default::default()
+        };
+
+        let skin_before = config.skin;
+        let border_before = config.border;
+        menu.navigate(MenuInput::Right, &mut config);
+        assert_eq!(config.theme, Theme::SystemAnsi);
+        assert_eq!(config.skin, skin_before, "skin is a separate axis");
+        assert_eq!(config.border, border_before, "border is a separate axis");
+
+        menu.selected = rows.iter().position(|r| *r == OptionRow::Border).unwrap();
+        menu.navigate(MenuInput::Right, &mut config);
+        assert_ne!(config.border, border_before);
+        assert_eq!(config.theme, Theme::SystemAnsi, "theme is untouched");
+    }
+
+    /// A hand-edited config naming a choice that no longer exists must still be
+    /// adjustable rather than sticking.
+    #[test]
+    fn cycling_from_an_unknown_value_lands_on_the_first_choice() {
+        assert_eq!(cycle(9, &[1, 2, 3], true), 2);
+        assert_eq!(cycle(9, &[1, 2, 3], false), 3);
     }
 
     #[test]

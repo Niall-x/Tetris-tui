@@ -9,9 +9,9 @@ The full design, including every researched rule value and its source, is in
 
 ## Status
 
-Both modes are playable, with menus, rebindable keys and saved high scores.
-Theming, tetromino skins and the animated backgrounds are not built yet — see
-the phase table in `brief.md` §13.
+Both modes are playable, with menus, rebindable keys, saved high scores and
+selectable visuals. The animated backgrounds are not built yet — see the phase
+table in `brief.md` §13.
 
 Done so far:
 
@@ -31,6 +31,9 @@ Done so far:
 - Responsive layout that sheds panels as the terminal shrinks
 - Title, options, pause and game-over screens, with per-mode top-10 score tables
   and settings saved as you change them
+- Three independent visual axes: colour theme, tetromino skin and board border,
+  including plain-ASCII and letter-per-cell options for terminals with poor
+  Unicode or colour support
 
 ## Running
 
@@ -84,6 +87,13 @@ changes:
 - **Starting level** — remembered separately per mode (NES 0-29, modern 1-20)
 - **DAS / ARR / ghost piece** — modern only. NES's equivalents are fixed by its
   ruleset, so they are not offered
+- **Colour theme** — `Guideline` is the published piece palette in 24-bit colour;
+  `System ANSI` uses the terminal's own 16 colours, which is the one to pick on a
+  terminal without truecolor
+- **Tetromino skin** — `Solid`, `Shaded`, `Outlined`, `ASCII` (`[]` per cell) or
+  `Letters` (the piece's own letter, which identifies pieces without colour)
+- **Board border** — `None`, `ASCII`, `Single`, `Double`, `Rounded` or `Heavy`,
+  applied to the menus as well as the board
 - **Key bindings** — `Enter` on a row, then press the key. A key already bound to
   something else is refused rather than silently stolen
 
@@ -91,7 +101,7 @@ changes:
 
 | Path | Contents |
 |---|---|
-| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, bindings |
+| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, theme, skin, border, bindings |
 | `~/.local/share/tetris-tui/scores.toml` | two top-10 tables, NES and modern kept apart |
 
 Both are plain TOML and meant to be hand-editable. A missing or corrupt file

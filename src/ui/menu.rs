@@ -9,7 +9,7 @@
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::config::Config;
@@ -21,6 +21,7 @@ use crate::menu::{
     TitleItem, TitleMenu,
 };
 use crate::scores::Scores;
+use crate::ui::style::BorderStyle;
 
 /// Figlet "ANSI Shadow", which is 45 columns wide — below that the title screen
 /// falls back to plain text rather than wrapping into rubble.
@@ -152,6 +153,9 @@ fn option_value(row: OptionRow, config: &Config, keymap: &Keymap) -> String {
         OptionRow::Das => format!("{} frames", config.das_frames),
         OptionRow::Arr => format!("{} frames", config.arr_frames),
         OptionRow::Ghost => if config.ghost { "on" } else { "off" }.to_string(),
+        OptionRow::Theme => config.theme.label().to_string(),
+        OptionRow::Skin => config.skin.label().to_string(),
+        OptionRow::Border => config.border.label().to_string(),
         OptionRow::Bind(action) => {
             let mut keys: Vec<String> = keymap
                 .keys_for(action)
@@ -175,6 +179,9 @@ fn option_label(row: OptionRow) -> String {
         OptionRow::Das => "DAS".into(),
         OptionRow::Arr => "ARR".into(),
         OptionRow::Ghost => "Ghost piece".into(),
+        OptionRow::Theme => "Colour theme".into(),
+        OptionRow::Skin => "Tetromino skin".into(),
+        OptionRow::Border => "Board border".into(),
         OptionRow::Bind(action) => action.label().to_string(),
     }
 }
@@ -183,10 +190,11 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
     let rows = OptionsMenu::rows(config);
     let keymap = config.keymap();
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" OPTIONS ")
-        .border_style(Style::default().fg(Color::DarkGray));
+    let block = config.border.apply(
+        Block::default()
+            .title(" OPTIONS ")
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
 
     let width = 44.min(area.width);
     let height = (rows.len() as u16 + 5).min(area.height);
@@ -251,13 +259,20 @@ fn action_of(row: OptionRow) -> Option<crate::input::action::Action> {
     }
 }
 
-pub fn render_scores(frame: &mut Frame, area: Rect, view: &ScoresView, scores: &Scores) {
+pub fn render_scores(
+    frame: &mut Frame,
+    area: Rect,
+    view: &ScoresView,
+    scores: &Scores,
+    border: BorderStyle,
+) {
     let table = scores.table(view.mode);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" HIGH SCORES — {} ", view.mode.label()))
-        .border_style(Style::default().fg(Color::DarkGray));
+    let block = border.apply(
+        Block::default()
+            .title(format!(" HIGH SCORES — {} ", view.mode.label()))
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
 
     let mut lines: Vec<Line> = Vec::new();
     if table.is_empty() {
@@ -296,7 +311,7 @@ fn truncate(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
-pub fn render_pause(frame: &mut Frame, area: Rect, menu: &PauseMenu) {
+pub fn render_pause(frame: &mut Frame, area: Rect, menu: &PauseMenu, border: BorderStyle) {
     let mut lines = vec![Line::from(Span::styled(
         "PAUSED",
         Style::default()
@@ -309,7 +324,7 @@ pub fn render_pause(frame: &mut Frame, area: Rect, menu: &PauseMenu) {
         .collect();
     lines.extend(menu_column(&labels, menu.selected));
 
-    overlay(frame, area, lines, 21);
+    overlay(frame, area, lines, 21, border);
 }
 
 pub fn render_game_over(
@@ -319,6 +334,7 @@ pub fn render_game_over(
     score: u64,
     lines_cleared: u32,
     level: u32,
+    border: BorderStyle,
 ) {
     let mut lines = vec![
         Line::from(Span::styled(
@@ -357,11 +373,17 @@ pub fn render_game_over(
         lines.extend(menu_column(&labels, menu.selected));
     }
 
-    overlay(frame, area, lines, 24);
+    overlay(frame, area, lines, 24, border);
 }
 
 /// A bordered box drawn over the board, sized to its contents.
-fn overlay(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>, min_width: u16) {
+fn overlay(
+    frame: &mut Frame,
+    area: Rect,
+    lines: Vec<Line<'static>>,
+    min_width: u16,
+    border: BorderStyle,
+) {
     let content_width = lines
         .iter()
         .map(|line| line.width() as u16)
@@ -375,7 +397,7 @@ fn overlay(frame: &mut Frame, area: Rect, lines: Vec<Line<'static>>, min_width: 
     frame.render_widget(
         Paragraph::new(lines)
             .alignment(Alignment::Center)
-            .block(Block::default().borders(Borders::ALL)),
+            .block(border.apply(Block::default())),
         rect,
     );
 }
@@ -486,6 +508,48 @@ mod tests {
         assert!(rendered.contains("press a key"));
     }
 
+    #[test]
+    fn the_options_screen_lists_the_visual_axes() {
+        let config = Config::default();
+        let menu = OptionsMenu::default();
+        let rendered = draw(80, 34, |frame| {
+            render_options(frame, frame.area(), &menu, &config)
+        });
+        println!("{rendered}");
+        for label in ["Colour theme", "Tetromino skin", "Board border"] {
+            assert!(rendered.contains(label), "{label} missing");
+        }
+        assert!(rendered.contains("Guideline"));
+        assert!(rendered.contains("Solid"));
+    }
+
+    /// The ASCII border exists for terminals that cannot draw box characters, so
+    /// picking it must change the chrome everywhere, menus included.
+    #[test]
+    fn the_border_style_reaches_the_menu_chrome() {
+        let config = Config {
+            border: BorderStyle::Ascii,
+            ..Default::default()
+        };
+        let rendered = draw(80, 34, |frame| {
+            render_options(frame, frame.area(), &OptionsMenu::default(), &config)
+        });
+        println!("{rendered}");
+        assert!(rendered.contains('+'), "ASCII corners expected");
+        assert!(!rendered.contains('┌'), "no box drawing at this setting");
+
+        let plain = draw(40, 20, |frame| {
+            render_pause(
+                frame,
+                frame.area(),
+                &PauseMenu::default(),
+                BorderStyle::None,
+            )
+        });
+        assert!(!plain.contains('┌'), "the None border draws no frame");
+        assert!(plain.contains("PAUSED"), "contents are still drawn");
+    }
+
     /// The keybind list is longer than a short terminal, so the panel scrolls
     /// rather than leaving the cursor somewhere off screen.
     #[test]
@@ -512,7 +576,7 @@ mod tests {
         let scores = Scores::default();
         let view = ScoresView::new(Mode::Nes);
         let rendered = draw(60, 20, |frame| {
-            render_scores(frame, frame.area(), &view, &scores)
+            render_scores(frame, frame.area(), &view, &scores, BorderStyle::default())
         });
         println!("{rendered}");
         assert!(rendered.contains("HIGH SCORES"));
@@ -535,7 +599,7 @@ mod tests {
         );
         let view = ScoresView::new(Mode::Modern);
         let rendered = draw(60, 20, |frame| {
-            render_scores(frame, frame.area(), &view, &scores)
+            render_scores(frame, frame.area(), &view, &scores, BorderStyle::default())
         });
         println!("{rendered}");
         assert!(rendered.contains("niall"));
@@ -547,7 +611,15 @@ mod tests {
     fn the_game_over_overlay_asks_for_a_name_when_the_run_placed() {
         let menu = GameOverMenu::new(true, "player");
         let rendered = draw(40, 20, |frame| {
-            render_game_over(frame, frame.area(), &menu, 999, 12, 3)
+            render_game_over(
+                frame,
+                frame.area(),
+                &menu,
+                999,
+                12,
+                3,
+                BorderStyle::default(),
+            )
         });
         println!("{rendered}");
         assert!(rendered.contains("GAME OVER"));
@@ -561,7 +633,15 @@ mod tests {
         menu.submit();
         menu.rank = Some(2);
         let rendered = draw(40, 20, |frame| {
-            render_game_over(frame, frame.area(), &menu, 999, 12, 3)
+            render_game_over(
+                frame,
+                frame.area(),
+                &menu,
+                999,
+                12,
+                3,
+                BorderStyle::default(),
+            )
         });
         println!("{rendered}");
         assert!(rendered.contains("ranked #3"));
@@ -572,7 +652,9 @@ mod tests {
     #[test]
     fn the_pause_overlay_lists_its_choices() {
         let menu = PauseMenu::default();
-        let rendered = draw(40, 20, |frame| render_pause(frame, frame.area(), &menu));
+        let rendered = draw(40, 20, |frame| {
+            render_pause(frame, frame.area(), &menu, BorderStyle::default())
+        });
         println!("{rendered}");
         assert!(rendered.contains("PAUSED"));
         assert!(rendered.contains("Resume"));
@@ -592,13 +674,32 @@ mod tests {
                 render_options(frame, frame.area(), &OptionsMenu::default(), &config)
             });
             draw(width, height, |frame| {
-                render_scores(frame, frame.area(), &ScoresView::new(Mode::Nes), &scores)
+                render_scores(
+                    frame,
+                    frame.area(),
+                    &ScoresView::new(Mode::Nes),
+                    &scores,
+                    BorderStyle::default(),
+                )
             });
             draw(width, height, |frame| {
-                render_pause(frame, frame.area(), &PauseMenu::default())
+                render_pause(
+                    frame,
+                    frame.area(),
+                    &PauseMenu::default(),
+                    BorderStyle::default(),
+                )
             });
             draw(width, height, |frame| {
-                render_game_over(frame, frame.area(), &GameOverMenu::new(true, "x"), 1, 1, 1)
+                render_game_over(
+                    frame,
+                    frame.area(),
+                    &GameOverMenu::new(true, "x"),
+                    1,
+                    1,
+                    1,
+                    BorderStyle::default(),
+                )
             });
         }
     }

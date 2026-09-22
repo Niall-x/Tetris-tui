@@ -17,6 +17,7 @@ use crate::game::Mode;
 use crate::input::action::Action;
 use crate::input::keymap::Keymap;
 use crate::input::keyname::{key_name, parse_key};
+use crate::ui::style::{BorderStyle, Skin, Theme, Visuals};
 
 const APP_DIR: &str = "tetris-tui";
 const CONFIG_FILE: &str = "config.toml";
@@ -32,6 +33,10 @@ pub struct Config {
     pub das_frames: u32,
     pub arr_frames: u32,
     pub ghost: bool,
+    /// The three visual axes (§7), independent of each other and of the ruleset.
+    pub theme: Theme,
+    pub skin: Skin,
+    pub border: BorderStyle,
     /// Name offered first in the high-score entry field, so a player who always
     /// uses the same one only types it once.
     pub player_name: String,
@@ -48,6 +53,9 @@ impl Default for Config {
             das_frames: DEFAULT_DAS_FRAMES,
             arr_frames: DEFAULT_ARR_FRAMES,
             ghost: true,
+            theme: Theme::default(),
+            skin: Skin::default(),
+            border: BorderStyle::default(),
             player_name: "player".into(),
             bindings: default_bindings(),
         }
@@ -111,6 +119,14 @@ impl Config {
         match mode {
             Mode::Nes => self.nes_start_level = level,
             Mode::Modern => self.modern_start_level = level.max(1),
+        }
+    }
+
+    pub fn visuals(&self) -> Visuals {
+        Visuals {
+            theme: self.theme,
+            skin: self.skin,
+            border: self.border,
         }
     }
 
@@ -178,6 +194,28 @@ mod tests {
         assert_eq!(restored.mode, config.mode);
         assert_eq!(restored.das_frames, config.das_frames);
         assert_eq!(restored.bindings, config.bindings);
+    }
+
+    #[test]
+    fn the_visual_settings_round_trip_through_toml() {
+        let config = Config {
+            theme: Theme::SystemAnsi,
+            skin: Skin::Letter,
+            border: BorderStyle::Ascii,
+            ..Default::default()
+        };
+        let restored = Config::from_toml(&config.to_toml());
+        assert_eq!(restored.theme, Theme::SystemAnsi);
+        assert_eq!(restored.skin, Skin::Letter);
+        assert_eq!(restored.border, BorderStyle::Ascii);
+        assert_eq!(restored.visuals(), config.visuals());
+    }
+
+    /// A config from before theming existed has none of these fields.
+    #[test]
+    fn a_config_without_visual_settings_takes_their_defaults() {
+        let config = Config::from_toml("mode = \"Nes\"\n");
+        assert_eq!(config.visuals(), Visuals::default());
     }
 
     #[test]
