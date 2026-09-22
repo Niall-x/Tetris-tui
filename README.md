@@ -9,8 +9,9 @@ The full design, including every researched rule value and its source, is in
 
 ## Status
 
-Both modes are playable. Theming, skins, backgrounds, menus and config
-persistence are not built yet — see the phase table in `brief.md` §13.
+Both modes are playable, with menus, rebindable keys and saved high scores.
+Theming, tetromino skins and the animated backgrounds are not built yet — see
+the phase table in `brief.md` §13.
 
 Done so far:
 
@@ -28,17 +29,22 @@ Done so far:
   detection with a timeout fallback
 - Board and HUD rendering at two terminal columns per cell, transparency-safe
 - Responsive layout that sheds panels as the terminal shrinks
+- Title, options, pause and game-over screens, with per-mode top-10 score tables
+  and settings saved as you change them
 
 ## Running
 
 There is no system-wide Rust toolchain on this machine, so use the flake:
 
 ```sh
-nix develop -c cargo run                  # NES mode, level 0
-nix develop -c cargo run -- nes 9         # NES mode, level 9
-nix develop -c cargo run -- modern        # modern mode
+nix develop -c cargo run                  # title screen
+nix develop -c cargo run -- nes 9         # straight into NES mode, level 9
+nix develop -c cargo run -- modern        # straight into modern mode
 nix develop -c cargo run -- modern 5      # modern mode, level 5
 ```
+
+A mode on the command line skips the title screen and starts a run with it;
+anything left out comes from the config file.
 
 Without flakes enabled:
 
@@ -52,6 +58,46 @@ Tests:
 nix develop -c cargo test
 ```
 
+## Screens
+
+```
+Title ──► Playing ⇄ Paused ──► Game over ──► Title
+  │          │         │          (name entry on a top-10 run)
+  ├─► Options ─────────┘
+  └─► High scores
+```
+
+Menus are driven by arrow keys or `hjkl`, `Enter` to select and `Esc` to go
+back; `q` on the title screen quits, and `Ctrl-C` leaves from anywhere. Those
+keys are fixed rather than rebindable, so a keybinding you regret can always be
+undone from the menu it was made in.
+
+During a run, `q` abandons it and returns to the title — an abandoned run is not
+scored. Topping out is, and a run that makes its mode's top ten asks for a name.
+
+## Options
+
+Everything on the options screen is written to the config file as soon as it
+changes:
+
+- **Game mode** — which ruleset `Play` starts
+- **Starting level** — remembered separately per mode (NES 0-29, modern 1-20)
+- **DAS / ARR / ghost piece** — modern only. NES's equivalents are fixed by its
+  ruleset, so they are not offered
+- **Key bindings** — `Enter` on a row, then press the key. A key already bound to
+  something else is refused rather than silently stolen
+
+## Files
+
+| Path | Contents |
+|---|---|
+| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, bindings |
+| `~/.local/share/tetris-tui/scores.toml` | two top-10 tables, NES and modern kept apart |
+
+Both are plain TOML and meant to be hand-editable. A missing or corrupt file
+falls back to defaults rather than blocking launch, and a hand-sorted score table
+is re-sorted on load.
+
 ## Controls
 
 | Key | Action | |
@@ -64,7 +110,7 @@ nix develop -c cargo test
 | `z` | rotate counter-clockwise | |
 | `c` / `Tab` | hold | modern only |
 | `p` / `Esc` | pause | |
-| `q` | quit | |
+| `q` | quit to title | |
 
 NES mode has no hard drop, no hold and no ghost piece — that is the ruleset, not
 a missing feature, and those keys simply do nothing there.

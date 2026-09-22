@@ -32,6 +32,9 @@ pub struct Config {
     pub das_frames: u32,
     pub arr_frames: u32,
     pub ghost: bool,
+    /// Name offered first in the high-score entry field, so a player who always
+    /// uses the same one only types it once.
+    pub player_name: String,
     /// Action name to the keys bound to it.
     pub bindings: BTreeMap<String, Vec<String>>,
 }
@@ -45,6 +48,7 @@ impl Default for Config {
             das_frames: DEFAULT_DAS_FRAMES,
             arr_frames: DEFAULT_ARR_FRAMES,
             ghost: true,
+            player_name: "player".into(),
             bindings: default_bindings(),
         }
     }

@@ -80,6 +80,12 @@ impl HeldKeys {
         }
     }
 
+    /// Forget every held action. Used when a run starts or ends: a key still down
+    /// at the time must not carry into the next one.
+    pub fn clear(&mut self) {
+        self.held.clear();
+    }
+
     /// Drop entries that have gone quiet, so the map does not grow unbounded in
     /// inferred mode.
     pub fn expire(&mut self, now: Instant) {
@@ -142,6 +148,15 @@ mod tests {
         keys.press(Action::SoftDrop, t0);
         keys.expire(t0 + Duration::from_millis(500));
         assert!(!keys.is_held(Action::SoftDrop, t0));
+    }
+
+    #[test]
+    fn clearing_forgets_everything_held() {
+        let mut keys = HeldKeys::new(TimingMode::Precise);
+        let now = Instant::now();
+        keys.press(Action::MoveLeft, now);
+        keys.clear();
+        assert!(!keys.is_held(Action::MoveLeft, now));
     }
 
     #[test]

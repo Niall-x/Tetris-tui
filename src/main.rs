@@ -15,12 +15,14 @@ fn main() -> io::Result<()> {
                 Ok(level) => start_level = Some(level),
                 Err(_) => {
                     eprintln!("usage: tetris-tui [nes|modern] [start-level]");
+                    eprintln!("with no arguments, the title screen opens instead");
                     std::process::exit(2);
                 }
             },
         }
     }
 
-    // Anything not given on the command line comes from the config file.
+    // Anything not given on the command line comes from the config file, and a
+    // mode given here skips the title screen straight into a run.
     app::run(mode, start_level)
 }
