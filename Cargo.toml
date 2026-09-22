@@ -1,0 +1,25 @@
+[package]
+name = "tetris-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Rules-accurate NES and modern-Guideline Tetris for the terminal"
+license = "MIT"
+
+[features]
+default = []
+audio = ["dep:rodio", "dep:rustfft"]
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+rand = { version = "0.8", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+rodio = { version = "0.19", optional = true }
+rustfft = { version = "6", optional = true }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
