@@ -30,6 +30,10 @@ pub struct Settings {
     pub das_frames: u32,
     pub arr_frames: u32,
     pub ghost: bool,
+    /// Frames the cleared rows stay on screen, animating, before the rows above
+    /// drop and the next piece spawns. Zero clears instantly. Guideline games
+    /// differ on this, so it is the player's choice.
+    pub line_clear_frames: u32,
 }
 
 impl Default for Settings {
@@ -38,6 +42,7 @@ impl Default for Settings {
             das_frames: DEFAULT_DAS_FRAMES,
             arr_frames: DEFAULT_ARR_FRAMES,
             ghost: true,
+            line_clear_frames: 0,
         }
     }
 }
@@ -75,6 +80,8 @@ impl FrameInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
     Falling,
+    /// Cleared rows animating out, when a line-clear delay is set.
+    LineClear,
     GameOver,
 }
 
@@ -119,6 +126,11 @@ pub struct ModernGame {
     rotated_last: bool,
     last_kick_index: usize,
     soft_drop_cells: u32,
+    /// Rows mid-clear while a line-clear delay runs, and how far through it is.
+    pending_clear: Vec<usize>,
+    clear_elapsed: u32,
+    /// How long this clear lasts, fixed when the piece locks.
+    clear_frames: u32,
 }
 
 impl ModernGame {
@@ -144,6 +156,9 @@ impl ModernGame {
             rotated_last: false,
             last_kick_index: 0,
             soft_drop_cells: 0,
+            pending_clear: Vec::new(),
+            clear_elapsed: 0,
+            clear_frames: 0,
         };
         let first = game.bag.next_piece();
         game.spawn(first);
@@ -264,8 +279,19 @@ impl ModernGame {
 
     pub fn tick(&mut self, input: FrameInput) -> FrameEvents {
         let mut events = FrameEvents::default();
-        if self.phase == Phase::GameOver {
-            return events;
+        match self.phase {
+            Phase::GameOver => return events,
+            Phase::LineClear => {
+                // No piece to move, but a held direction keeps charging so the
+                // next piece can auto-shift straight away.
+                let _ = self.das.update(input.held_direction());
+                self.clear_elapsed += 1;
+                if self.clear_elapsed >= self.clear_frames {
+                    self.complete_line_clear(&mut events);
+                }
+                return events;
+            }
+            Phase::Falling => {}
         }
 
         if input.hold {
@@ -418,11 +444,28 @@ impl ModernGame {
         self.score.add_soft_drop(self.soft_drop_cells);
         events.piece_locked = true;
 
-        let cleared = self.board.clear_full_lines();
-        let perfect = !cleared.is_empty() && self.board.stack_height() == 0;
+        let full: Vec<usize> = (0..self.board.height())
+            .filter(|&y| self.board.is_row_full(y))
+            .collect();
+
+        // The placement is scored on the lock frame either way, so the perfect
+        // clear is judged on a copy with the rows already gone.
+        let perfect = !full.is_empty() && {
+            let mut after = self.board.clone();
+            after.clear_full_lines();
+            after.stack_height() == 0
+        };
+        let delay = if full.is_empty() {
+            0
+        } else {
+            self.settings.line_clear_frames
+        };
+        if delay == 0 {
+            self.board.clear_full_lines();
+        }
 
         let placement = Placement {
-            lines: cleared.len() as u32,
+            lines: full.len() as u32,
             tspin: spin,
             perfect_clear: perfect,
         };
@@ -446,11 +489,47 @@ impl ModernGame {
             return;
         }
 
+        if delay > 0 {
+            self.pending_clear = full;
+            self.clear_elapsed = 0;
+            self.clear_frames = delay;
+            self.phase = Phase::LineClear;
+            return;
+        }
+
+        self.spawn_next(events);
+    }
+
+    fn complete_line_clear(&mut self, events: &mut FrameEvents) {
+        self.board.clear_full_lines();
+        self.pending_clear.clear();
+        self.clear_elapsed = 0;
+        self.phase = Phase::Falling;
+        self.spawn_next(events);
+    }
+
+    fn spawn_next(&mut self, events: &mut FrameEvents) {
         let next = self.bag.next_piece();
         self.spawn(next);
         if self.phase == Phase::GameOver {
             events.topped_out = true;
         }
+    }
+
+    /// Rows mid-clear while a line-clear delay runs; empty otherwise.
+    pub fn clearing_rows(&self) -> &[usize] {
+        &self.pending_clear
+    }
+
+    /// How far the clear animation is through, as columns erased either side of
+    /// the centre, 0 to 4 — the same outward erase NES uses, spread evenly over
+    /// whatever delay the player chose.
+    pub fn clear_step(&self) -> u32 {
+        if self.pending_clear.is_empty() {
+            return 0;
+        }
+        let total = self.clear_frames.max(1);
+        (self.clear_elapsed * 5 / total).min(4)
     }
 }
 
@@ -610,6 +689,104 @@ mod tests {
         assert_eq!(events.lines_cleared, 1);
         assert_eq!(game.lines(), 1);
         assert!(game.score() >= 100);
+    }
+
+    /// Drop the active piece onto the stack, so locking it leaves room to spawn.
+    fn drop_current(game: &mut ModernGame) {
+        let mut piece = game.current.unwrap();
+        while game.fits(piece.moved(0, 1)) {
+            piece = piece.moved(0, 1);
+        }
+        game.current = Some(piece);
+    }
+
+    fn with_line_clear_delay(frames: u32) -> ModernGame {
+        ModernGame::with_settings(
+            1,
+            Settings {
+                line_clear_frames: frames,
+                ..Default::default()
+            },
+        )
+    }
+
+    #[test]
+    fn with_no_delay_the_rows_drop_and_the_next_piece_spawns_at_once() {
+        let mut game = ModernGame::new(1);
+        let bottom = game.board.height() as i32 - 1;
+        for x in 0..10 {
+            game.board.set(x, bottom, Some(PieceKind::I));
+        }
+        drop_current(&mut game);
+        game.lock_piece(&mut FrameEvents::default());
+        assert_eq!(game.phase(), Phase::Falling);
+        assert!(game.clearing_rows().is_empty());
+        assert!(game.current().is_some());
+    }
+
+    /// With a delay set, the placement scores on the lock frame but the rows stay
+    /// up, animating, and the next piece waits until they have gone.
+    #[test]
+    fn a_line_clear_delay_holds_the_rows_and_the_next_piece() {
+        let mut game = with_line_clear_delay(20);
+        let bottom = game.board.height() - 1;
+        for x in 0..10 {
+            game.board.set(x, bottom as i32, Some(PieceKind::I));
+        }
+        let mut events = FrameEvents::default();
+        drop_current(&mut game);
+        game.lock_piece(&mut events);
+
+        assert_eq!(events.lines_cleared, 1, "scored on the lock frame");
+        assert_eq!(game.lines(), 1);
+        assert_eq!(game.phase(), Phase::LineClear);
+        assert!(game.current().is_none());
+
+        let mut last_step = 0;
+        // The field holds for the 20 frames set.
+        for _ in 0..19 {
+            game.tick(idle());
+            assert!(game.board.is_row_full(bottom), "still showing");
+            assert!(
+                game.clear_step() >= last_step,
+                "the erase only moves outward"
+            );
+            last_step = game.clear_step();
+        }
+        assert_eq!(last_step, 4);
+
+        game.tick(idle());
+        assert_eq!(game.phase(), Phase::Falling);
+        assert!(!game.board.is_row_full(bottom), "the full row has gone");
+        assert!(game.current().is_some(), "the next piece spawns");
+    }
+
+    /// Perfect-clear detection has to look past rows that are still on screen:
+    /// with or without a delay, the same placement is a perfect clear.
+    #[test]
+    fn a_delayed_clear_still_counts_a_perfect_clear() {
+        for delay in [0, 10] {
+            let mut game = with_line_clear_delay(delay);
+            let bottom = game.board.height() as i32 - 1;
+            for x in 0..6 {
+                game.board.set(x, bottom, Some(PieceKind::I));
+            }
+            // A flat I finishing the row, and nothing else on the board.
+            let piece = (0..4)
+                .map(|dy| ActivePiece::new(PieceKind::I, 0, 6, bottom - dy))
+                .find(|&p| {
+                    ModernGame::cells_of(p)
+                        .iter()
+                        .all(|&(x, y)| y == bottom && x >= 6)
+                })
+                .expect("some offset puts a flat I on the bottom row");
+            game.current = Some(piece);
+
+            let mut events = FrameEvents::default();
+            game.lock_piece(&mut events);
+            assert_eq!(events.lines_cleared, 1, "delay {delay}");
+            assert!(events.perfect_clear, "delay {delay}");
+        }
     }
 
     #[test]

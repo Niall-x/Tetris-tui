@@ -260,14 +260,13 @@ enum Theme { OfficialGuideline, SystemAnsi(AnsiPalette) }
 
 ### 7.2 Tetrimino Skin (new — cell-glyph rendering, independent of color)
 ```rust
-enum Skin { SolidBlock, Shaded, Outlined, AsciiBracket, LetterPerCell }
+enum Skin { SolidBlock, Shaded, AsciiBracket, LetterPerCell }
 ```
 - **Solid block** (default): full-block character (`█`) per cell, colored per theme.
 - **Shaded**: partial-block shade characters (`▓`/`▒`/`░`) for a softer/retro texture.
-- **Outlined**: box-drawing characters trace each piece's outline rather than filling it solid.
 - **ASCII bracket**: `[]`-per-cell — plain-ASCII, max-compatibility fallback for terminals with poor Unicode/color support.
 - **Letter-per-cell**: each cell shows its piece letter (I/O/T/S/Z/J/L) — a nod to old terminal Tetris clones that couldn't rely on color at all; useful as a colorblind-friendly / no-color-terminal option.
-- Caveat: every skin must preserve the 2-columns-per-cell alignment; some skins (letter, outlined) read better with the ghost piece rendered distinctly dimmed/hollow rather than the same glyph half-opacity (terminals can't do real alpha) — use a different glyph or dim color for ghost cells regardless of skin.
+- Caveat: every skin must preserve the 2-columns-per-cell alignment; some skins (letter) read better with the ghost piece rendered distinctly dimmed/hollow rather than the same glyph half-opacity (terminals can't do real alpha) — use a different glyph or dim color for ghost cells regardless of skin.
 
 ### 7.3 Board Border Style (new)
 ```rust
@@ -353,7 +352,7 @@ Per your steer: this is **not** a system-audio-capture background. It only visua
    Game Mode: NES | Modern
    Background: one of the 11 (§8), with description text
    Color theme: Official | System-detected ANSI (§7.1)
-   Tetrimino skin: Solid | Shaded | Outlined | ASCII bracket | Letters (§7.2)
+   Tetrimino skin: Solid | Shaded | ASCII bracket | Letters (§7.2)
    Board border: None | ASCII | Single | Double | Rounded | Heavy (§7.3)
    Keybinds: per-Action rebind list with conflict detection (§6)
    DAS/ARR tuning: Modern mode only (NES's is fixed, not exposed — deliberate asymmetry, §4.6)
@@ -441,13 +440,13 @@ Ordered to de-risk rules-accuracy first, cosmetics last.
 - **SRS kick-table sign convention** (§4.1) — resolved. Published offsets grow y upward; the board's rows grow downward, so the sign is flipped in exactly one function. Pinned by two real-board scenarios: a vertical I against the left wall kicking right via test 3, and a flat I on the floor kicking *up* two rows via test 5.
 - **7-bag first piece** (§4.3) — resolved. The Guideline places no constraint on the first piece; the "never S/Z/O first" rule belongs to Tetris The Grand Master Ace, not the Guideline (tetris.wiki/Random_Generator). Implemented as a plain shuffle. The documented guarantees (max 12-piece gap, S/Z runs bounded at 4) are asserted as property tests.
 - **fastfetch logo invocation** (§8.3) — not needed. The logo background took §8.3's recommended route of bundling its own distro logos, matched from `/etc/os-release`, so nothing ever calls `fastfetch`.
+- **NES line-clear delay** (§3.4) — resolved from the disassembly (CelestialAmber/TetrisNESDisasm, `updateLineClearingAnimation`). Five steps, each blanking one column either side of centre (the `leftColumns` 4,3,2,1,0 / `rightColumns` 5,6,7,8,9 tables), advancing only on frames where `frameCounter & 3 == 0`. So the first step lands 1–4 frames after the lock and the clear takes 17–20 frames, matching tetris.wiki. The rows above drop in one go when it finishes, with no falling animation. A Tetris also turns the background white on each of those frames (`@renderTetrisFlashAndSound`). All three are implemented and pinned by tests in `nes/game.rs`, which replaced the flat 18-frame placeholder.
 
 ### Still open
 
 - **OSC palette detection is not implemented** (§7.1). The `SystemAnsi` theme emits symbolic 16-colour codes, which the terminal already renders from the user's own palette, so the visible result is what §7.1 describes as the fallback. Querying OSC 4/10/11 would only add the ability to *choose* slots by measured separation, and it needs raw-mode stdin parsing that fights the event loop for the same bytes — worth doing only if real palettes turn out to make pieces hard to tell apart.
 
 - Exact NES ARE row-boundary cutoffs beyond the documented delta pattern (§3.4).
-- Exact NES line-clear animation delay/frame-parity table (§3.4) — currently a flat 18 frames.
 - NES soft-drop rate (§3.4) — implemented as one row per 2 frames, the commonly cited figure, not confirmed against a disassembly.
 - **Spawn headroom.** The ROM's playfield is exactly 10x20 with pieces spawning flat on row 0, but the vertical T/J/L orientations reach a row above their pivot (I reaches two), which would make a piece unrotatable the instant it appears. Two hidden rows were added so rotation works immediately, matching how the real game plays. Worth confirming by playtest against real NES Tetris.
 - Guideline combo formula variance across commercial titles (linear `50×combo×level` vs. some titles' lookup tables), and the exact combo-count starting index (§4.5) — implementing the commonly documented linear formula as the reference default.

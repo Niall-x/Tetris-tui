@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crossterm::event::KeyModifiers;
+use crossterm::event::{KeyCode, KeyModifiers};
 use serde::{Deserialize, Serialize};
 
 use crate::background::scenes::SceneChoice;
@@ -17,14 +17,17 @@ use crate::engine::modern::game::{
     Settings as ModernSettings, DEFAULT_ARR_FRAMES, DEFAULT_DAS_FRAMES,
 };
 use crate::game::Mode;
-use crate::input::action::Action;
-use crate::input::keymap::Keymap;
+use crate::input::action::{Action, MenuInput};
+use crate::input::keymap::{Keymap, MenuKeymap};
 use crate::input::keyname::{key_name, parse_key};
 use crate::storage;
 use crate::ui::style::{BorderStyle, Skin, Theme, Visuals};
 
 const APP_DIR: &str = "tetris-tui";
 const CONFIG_FILE: &str = "config.toml";
+
+/// A second: longer stops being a pause and starts being a wait.
+pub const MAX_LINE_CLEAR_FRAMES: u32 = 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -37,6 +40,9 @@ pub struct Config {
     pub das_frames: u32,
     pub arr_frames: u32,
     pub ghost: bool,
+    /// Modern only: frames cleared rows animate before the rows above drop. Zero
+    /// is instant. NES's line-clear delay is fixed by the ruleset.
+    pub line_clear_frames: u32,
     /// The three visual axes (§7), independent of each other and of the ruleset.
     pub theme: Theme,
     pub skin: Skin,
@@ -45,11 +51,16 @@ pub struct Config {
     /// Which still scene the `Scene` background shows; `Random` picks one per
     /// session.
     pub scene: SceneChoice,
+    /// Draw the background at reduced brightness, so it stays behind the board.
+    pub dim_background: bool,
     /// Name offered first in the high-score entry field, so a player who always
     /// uses the same one only types it once.
     pub player_name: String,
     /// Action name to the keys bound to it.
     pub bindings: BTreeMap<String, Vec<String>>,
+    /// Menu input name to the rebindable keys for it. The arrows, Enter and Esc
+    /// work on every menu regardless, so they are not stored here.
+    pub menu_bindings: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for Config {
@@ -61,15 +72,24 @@ impl Default for Config {
             das_frames: DEFAULT_DAS_FRAMES,
             arr_frames: DEFAULT_ARR_FRAMES,
             ghost: true,
+            line_clear_frames: 0,
             theme: Theme::default(),
             skin: Skin::default(),
             border: BorderStyle::default(),
             background: BackgroundKind::default(),
             scene: SceneChoice::default(),
+            dim_background: true,
             player_name: "player".into(),
             bindings: default_bindings(),
+            menu_bindings: default_menu_bindings(),
         }
     }
+}
+
+fn key_names(keys: Vec<KeyCode>) -> Vec<String> {
+    let mut names: Vec<String> = keys.into_iter().map(key_name).collect();
+    names.sort();
+    names
 }
 
 fn default_bindings() -> BTreeMap<String, Vec<String>> {
@@ -77,11 +97,30 @@ fn default_bindings() -> BTreeMap<String, Vec<String>> {
     Action::ALL
         .into_iter()
         .map(|action| {
-            let mut keys: Vec<String> = keymap.keys_for(action).into_iter().map(key_name).collect();
-            keys.sort();
-            (action.name().to_string(), keys)
+            (
+                action.name().to_string(),
+                key_names(keymap.keys_for(action)),
+            )
         })
         .collect()
+}
+
+fn default_menu_bindings() -> BTreeMap<String, Vec<String>> {
+    let keymap = MenuKeymap::default();
+    MenuInput::ALL
+        .into_iter()
+        .map(|input| (input.name().to_string(), key_names(keymap.keys_for(input))))
+        .collect()
+}
+
+/// The keys configured under `name`, or `None` if there are no usable ones.
+fn configured_keys(table: &BTreeMap<String, Vec<String>>, name: &str) -> Option<Vec<KeyCode>> {
+    let keys: Vec<KeyCode> = table
+        .get(name)?
+        .iter()
+        .filter_map(|k| parse_key(k))
+        .collect();
+    (!keys.is_empty()).then_some(keys)
 }
 
 fn clamp_level(mode: Mode, level: u32) -> u32 {
@@ -154,6 +193,7 @@ impl Config {
             das_frames: self.das_frames.max(1),
             arr_frames: self.arr_frames.max(1),
             ghost: self.ghost,
+            line_clear_frames: self.line_clear_frames.min(MAX_LINE_CLEAR_FRAMES),
         }
     }
 
@@ -165,18 +205,8 @@ impl Config {
         let mut map = Keymap::empty();
 
         for action in Action::ALL {
-            let configured: Vec<_> = self
-                .bindings
-                .get(action.name())
-                .map(|keys| keys.iter().filter_map(|k| parse_key(k)).collect())
-                .unwrap_or_default();
-
-            let keys = if configured.is_empty() {
-                defaults.keys_for(action)
-            } else {
-                configured
-            };
-
+            let keys = configured_keys(&self.bindings, action.name())
+                .unwrap_or_else(|| defaults.keys_for(action));
             for code in keys {
                 map.bind(code, KeyModifiers::NONE, action);
             }
@@ -184,18 +214,39 @@ impl Config {
         map
     }
 
-    pub fn set_binding(&mut self, action: Action, keys: &[crossterm::event::KeyCode]) {
-        self.bindings.insert(
-            action.name().to_string(),
-            keys.iter().map(|&k| key_name(k)).collect(),
-        );
+    /// The menu keymap, with the same fallback as `keymap`. A fixed menu key in
+    /// the file is skipped: it already does its fixed job and cannot do another.
+    pub fn menu_keymap(&self) -> MenuKeymap {
+        let defaults = MenuKeymap::default();
+        let mut map = MenuKeymap::empty();
+
+        for input in MenuInput::ALL {
+            let keys = configured_keys(&self.menu_bindings, input.name())
+                .unwrap_or_else(|| defaults.keys_for(input));
+            for code in keys {
+                if !MenuKeymap::is_fixed(code) {
+                    map.bind(code, input);
+                }
+            }
+        }
+        map
+    }
+
+    pub fn set_binding(&mut self, action: Action, keys: &[KeyCode]) {
+        self.bindings
+            .insert(action.name().to_string(), key_names(keys.to_vec()));
+    }
+
+    pub fn set_menu_binding(&mut self, input: MenuInput, keys: &[KeyCode]) {
+        self.menu_bindings
+            .insert(input.name().to_string(), key_names(keys.to_vec()));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState};
+    use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {
@@ -284,17 +335,62 @@ mod tests {
     #[test]
     fn custom_bindings_are_honoured() {
         let mut config = Config::default();
-        config.set_binding(Action::RotateCw, &[KeyCode::Char('k')]);
+        config.set_binding(Action::RotateCw, &[KeyCode::Char('n')]);
 
         let map = config.keymap();
         assert_eq!(
-            map.action_for(&key(KeyCode::Char('k'))),
+            map.action_for(&key(KeyCode::Char('n'))),
             Some(Action::RotateCw)
         );
         assert_eq!(
-            map.action_for(&key(KeyCode::Char('x'))),
+            map.action_for(&key(KeyCode::Char('k'))),
             None,
             "the replaced default should be gone"
+        );
+    }
+
+    #[test]
+    fn custom_menu_bindings_are_honoured_and_round_trip() {
+        let mut config = Config::default();
+        config.set_menu_binding(MenuInput::Confirm, &[KeyCode::Char('l')]);
+
+        let restored = Config::from_toml(&config.to_toml());
+        let menu = restored.menu_keymap();
+        assert_eq!(
+            menu.input_for(&key(KeyCode::Char('l'))),
+            Some(MenuInput::Confirm)
+        );
+        assert_eq!(menu.input_for(&key(KeyCode::Char('j'))), None);
+        // Enter is fixed, so it confirms whatever the file says.
+        assert_eq!(
+            menu.input_for(&key(KeyCode::Enter)),
+            Some(MenuInput::Confirm)
+        );
+    }
+
+    /// A config written before menu bindings existed gets the default ones.
+    #[test]
+    fn a_config_without_menu_bindings_takes_the_defaults() {
+        let config = Config::from_toml("[bindings]\nhold = [\"c\"]\n");
+        assert_eq!(
+            config.menu_keymap().input_for(&key(KeyCode::Char('w'))),
+            Some(MenuInput::Up)
+        );
+    }
+
+    /// A hand-edited file binding a fixed key to another menu input must not
+    /// change what the fixed key does.
+    #[test]
+    fn a_fixed_menu_key_in_the_file_keeps_its_fixed_job() {
+        let config = Config::from_toml("[menu_bindings]\nback = [\"enter\", \"x\"]\n");
+        let menu = config.menu_keymap();
+        assert_eq!(
+            menu.input_for(&key(KeyCode::Enter)),
+            Some(MenuInput::Confirm)
+        );
+        assert_eq!(
+            menu.input_for(&key(KeyCode::Char('x'))),
+            Some(MenuInput::Back)
         );
     }
 

@@ -6,6 +6,7 @@
 //! caring. Everything is sized defensively: the same 22x22 terminal that can just
 //! about hold a playfield also has to hold these.
 
+use crossterm::event::KeyCode;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,7 +15,7 @@ use ratatui::Frame;
 
 use crate::config::Config;
 use crate::game::Mode;
-use crate::input::keymap::Keymap;
+use crate::input::keymap::{Keymap, MenuKeymap, FIXED_MENU_KEYS};
 use crate::input::keyname::display_name;
 use crate::menu::{
     GameOverItem, GameOverMenu, OptionRow, OptionsMenu, PauseItem, PauseMenu, ScoresView,
@@ -116,7 +117,7 @@ pub fn render_title(
 
     // The logo is block and box-drawing characters, so an ASCII setting gets
     // the plain title too.
-    if !visuals.ascii_only() && area.width >= LOGO_WIDTH && area.height >= 16 {
+    if !visuals.ascii_interface() && area.width >= LOGO_WIDTH && area.height >= 16 {
         for (row, colour) in LOGO.iter().zip(LOGO_COLORS) {
             lines.push(Line::from(Span::styled(*row, Style::default().fg(colour))));
         }
@@ -144,7 +145,7 @@ pub fn render_title(
         .collect();
     lines.extend(menu_column(&labels, menu.selected));
     lines.push(Line::from(""));
-    lines.push(dim(visuals.text("↑↓ choose · enter select · q quit")));
+    lines.push(dim(visuals.text("↑↓ choose · enter select · esc quit")));
 
     let height = lines.len() as u16;
     let width = lines
@@ -160,29 +161,56 @@ pub fn render_title(
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
 }
 
-fn option_value(row: OptionRow, config: &Config, keymap: &Keymap) -> String {
+fn on_off(value: bool) -> String {
+    if value { "on" } else { "off" }.to_string()
+}
+
+/// A list of keys as the controls rows show them.
+fn key_list(keys: Vec<KeyCode>, fallback: &str) -> String {
+    let mut keys: Vec<String> = keys.into_iter().map(display_name).collect();
+    keys.sort();
+    if keys.is_empty() {
+        fallback.to_string()
+    } else {
+        keys.join(" / ")
+    }
+}
+
+fn option_value(
+    row: OptionRow,
+    config: &Config,
+    keymap: &Keymap,
+    menu_keys: &MenuKeymap,
+) -> String {
     match row {
         OptionRow::Mode => config.mode.label().to_string(),
         OptionRow::StartLevel => config.start_level(config.mode).to_string(),
         OptionRow::Das => format!("{} frames", config.das_frames),
         OptionRow::Arr => format!("{} frames", config.arr_frames),
-        OptionRow::Ghost => if config.ghost { "on" } else { "off" }.to_string(),
+        OptionRow::Ghost => on_off(config.ghost),
+        OptionRow::LineClear => match config.line_clear_frames {
+            0 => "instant".to_string(),
+            frames => format!("{frames} frames"),
+        },
         OptionRow::Theme => config.theme.label().to_string(),
         OptionRow::Skin => config.skin.label().to_string(),
         OptionRow::Border => config.border.label().to_string(),
+        OptionRow::DimBackground => on_off(config.dim_background),
         OptionRow::Background => config.background.label().to_string(),
         OptionRow::Scene => config.scene.label().to_string(),
-        OptionRow::Bind(action) => {
-            let mut keys: Vec<String> = keymap
-                .keys_for(action)
-                .into_iter()
-                .map(display_name)
-                .collect();
-            keys.sort();
-            if keys.is_empty() {
-                "unbound".to_string()
+        OptionRow::Bind(action) => key_list(keymap.keys_for(action), "unbound"),
+        // The fixed key always works too, so a menu input is never unbound.
+        OptionRow::MenuBind(input) => {
+            let fixed = FIXED_MENU_KEYS
+                .iter()
+                .find(|&&(_, i)| i == input)
+                .map(|&(code, _)| display_name(code))
+                .unwrap_or_default();
+            let bound = key_list(menu_keys.keys_for(input), "");
+            if bound.is_empty() {
+                fixed
             } else {
-                keys.join(" / ")
+                format!("{bound} ({fixed})")
             }
         }
     }
@@ -195,18 +223,22 @@ fn option_label(row: OptionRow) -> String {
         OptionRow::Das => "DAS".into(),
         OptionRow::Arr => "ARR".into(),
         OptionRow::Ghost => "Ghost piece".into(),
+        OptionRow::LineClear => "Line clear delay".into(),
         OptionRow::Theme => "Colour theme".into(),
         OptionRow::Skin => "Tetromino skin".into(),
         OptionRow::Border => "Board border".into(),
+        OptionRow::DimBackground => "  dimmed".into(),
         OptionRow::Background => "Background".into(),
         OptionRow::Scene => "  scene".into(),
         OptionRow::Bind(action) => action.label().to_string(),
+        OptionRow::MenuBind(input) => input.label().to_string(),
     }
 }
 
 pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config: &Config) {
     let rows = OptionsMenu::rows(config);
     let keymap = config.keymap();
+    let menu_keys = config.menu_keymap();
     let visuals = config.visuals();
 
     let block = config.border.apply(
@@ -235,11 +267,11 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
         let index = start + index;
         let selected = index == menu.selected;
         let label = option_label(*row);
-        let awaiting_key = menu.rebinding.is_some() && menu.rebinding == action_of(*row);
+        let awaiting_key = menu.rebinding.is_some() && menu.rebinding == row.rebind();
         let value = if awaiting_key {
             "press a key…".to_string()
         } else {
-            option_value(*row, config, &keymap)
+            option_value(*row, config, &keymap, &menu_keys)
         };
         // Key names include arrows, which an ASCII setting spells out.
         let value = visuals.text(&value).into_owned();
@@ -273,14 +305,6 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
     // Deliberately unwrapped: the rows are padded to the panel width, and wrapping
     // would trim that padding away and break the value column.
     frame.render_widget(Paragraph::new(lines), interior);
-}
-
-/// The action a row rebinds, if it is a rebind row.
-fn action_of(row: OptionRow) -> Option<crate::input::action::Action> {
-    match row {
-        OptionRow::Bind(action) => Some(action),
-        _ => None,
-    }
 }
 
 pub fn render_scores(
@@ -532,7 +556,9 @@ mod tests {
                 .iter()
                 .position(|r| matches!(r, OptionRow::Bind(_)))
                 .unwrap(),
-            rebinding: Some(crate::input::action::Action::MoveLeft),
+            rebinding: Some(crate::menu::Rebind::Game(
+                crate::input::action::Action::MoveLeft,
+            )),
             notice: None,
         };
         let rendered = draw(80, 30, |frame| {

@@ -219,11 +219,28 @@ impl Game {
         }
     }
 
-    /// Rows currently flashing from a line clear; modern mode clears instantly.
+    /// Rows mid-clear, still on the board while they animate out. Modern mode
+    /// only has any when the player has set a line-clear delay.
     pub fn clearing_rows(&self) -> &[usize] {
         match self {
             Game::Nes(game) => game.clearing_rows(),
-            Game::Modern(_) => &[],
+            Game::Modern(game) => game.clearing_rows(),
+        }
+    }
+
+    /// Columns erased either side of the centre of the clearing rows, 0 to 4.
+    pub fn clear_step(&self) -> u32 {
+        match self {
+            Game::Nes(game) => game.clear_step(),
+            Game::Modern(game) => game.clear_step(),
+        }
+    }
+
+    /// Whether the field flashes this frame, as NES does on a Tetris.
+    pub fn tetris_flash(&self) -> bool {
+        match self {
+            Game::Nes(game) => game.tetris_flash(),
+            Game::Modern(_) => false,
         }
     }
 

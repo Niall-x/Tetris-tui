@@ -64,7 +64,7 @@ pub enum Phase {
     /// Counting out entry delay before the next piece appears.
     EntryDelay,
     Falling,
-    /// Line-clear flash, before entry delay starts.
+    /// Line-clear animation, before entry delay starts.
     LineClear,
     GameOver,
 }
@@ -99,6 +99,11 @@ pub struct NesGame {
     /// Rows the current piece has been soft-dropped, paid out when it locks.
     soft_drop_rows: u32,
     pending_clear: Vec<usize>,
+    /// How many line-clear animation steps have run on `pending_clear`.
+    clear_step: u32,
+    /// The ROM's global frame counter, which the line-clear animation is timed
+    /// against.
+    frame: u32,
 }
 
 impl NesGame {
@@ -124,6 +129,8 @@ impl NesGame {
             soft_drop_counter: 0,
             soft_drop_rows: 0,
             pending_clear: Vec::new(),
+            clear_step: 0,
+            frame: 0,
         };
         game.spawn(first);
         game
@@ -170,9 +177,24 @@ impl NesGame {
         self.piece_counts[Self::stat_index(kind)]
     }
 
-    /// Rows being flashed during a line clear, for the UI to animate.
+    /// Rows mid-clear, still on the board until the animation finishes.
     pub fn clearing_rows(&self) -> &[usize] {
         &self.pending_clear
+    }
+
+    /// How many columns either side of the centre have been erased from the
+    /// clearing rows so far, 0 to 4. (The fifth step empties the row, which is
+    /// the moment the rows above drop, so it never shows as a step of its own.)
+    pub fn clear_step(&self) -> u32 {
+        self.clear_step
+    }
+
+    /// Whether this frame is one of a Tetris's screen flashes: the ROM turns the
+    /// background white on every animation step of a four-line clear.
+    pub fn tetris_flash(&self) -> bool {
+        self.phase == Phase::LineClear
+            && self.pending_clear.len() == 4
+            && self.frame.is_multiple_of(gravity::LINE_CLEAR_STEP_FRAMES)
     }
 
     fn stat_index(kind: PieceKind) -> usize {
@@ -219,13 +241,18 @@ impl NesGame {
         // The ROM steps its PRNG every frame, which is what makes piece order
         // depend on how long the player takes. Keep that true here.
         self.rng.advance_frame();
+        self.frame = self.frame.wrapping_add(1);
 
         match self.phase {
             Phase::GameOver => return events,
             Phase::LineClear => {
-                self.phase_timer = self.phase_timer.saturating_sub(1);
-                if self.phase_timer == 0 {
-                    self.complete_line_clear(&mut events);
+                // Steps land on the global frame counter's multiples of four, not
+                // at fixed offsets from the lock — hence 17–20 frames in all.
+                if self.frame.is_multiple_of(gravity::LINE_CLEAR_STEP_FRAMES) {
+                    self.clear_step += 1;
+                    if self.clear_step == gravity::LINE_CLEAR_STEPS {
+                        self.complete_line_clear(&mut events);
+                    }
                 }
                 return events;
             }
@@ -372,7 +399,7 @@ impl NesGame {
         } else {
             self.pending_clear = full;
             self.phase = Phase::LineClear;
-            self.phase_timer = gravity::LINE_CLEAR_DELAY_FRAMES;
+            self.clear_step = 0;
         }
     }
 
@@ -386,6 +413,7 @@ impl NesGame {
             .unwrap_or(0)
             .saturating_sub(SPAWN_BUFFER_ROWS) as u32;
         self.pending_clear.clear();
+        self.clear_step = 0;
 
         self.score += scoring::line_clear_score(count, self.level);
         self.lines += count;
@@ -615,6 +643,83 @@ mod tests {
         assert_eq!(events.lines_cleared, 1);
         assert_eq!(game.lines(), 1);
         assert_eq!(game.score(), 40, "single at level 0");
+    }
+
+    /// Fill the bottom `rows` rows and lock a piece up out of the way, with the
+    /// global frame counter at `frame`. Returns the game mid line clear.
+    fn lock_into_full_rows(rows: i32, frame: u32) -> NesGame {
+        let mut game = NesGame::new(0);
+        let bottom = game.board.height() as i32 - 1;
+        for y in bottom - rows + 1..=bottom {
+            for x in 0..10 {
+                game.board.set(x, y, Some(PieceKind::I));
+            }
+        }
+        game.frame = frame;
+        let mut events = FrameEvents::default();
+        game.lock_piece(&mut events);
+        assert_eq!(game.phase(), Phase::LineClear);
+        game
+    }
+
+    fn frames_until_cleared(game: &mut NesGame) -> u32 {
+        let mut frames = 0;
+        while game.phase() == Phase::LineClear {
+            game.tick(idle());
+            frames += 1;
+        }
+        frames
+    }
+
+    /// Steps land on multiples of four of the global frame counter, so where in
+    /// that cycle the piece locked decides whether the clear takes 17, 18, 19 or
+    /// 20 frames.
+    #[test]
+    fn a_line_clear_takes_17_to_20_frames_depending_on_the_lock_frame() {
+        let durations: Vec<u32> = (0..4)
+            .map(|frame| frames_until_cleared(&mut lock_into_full_rows(1, frame)))
+            .collect();
+        assert_eq!(durations, vec![20, 19, 18, 17]);
+    }
+
+    /// The rows stay on the board, erasing from the centre outward, and only drop
+    /// once the animation is over.
+    #[test]
+    fn cleared_rows_erase_outward_and_only_then_drop() {
+        let mut game = lock_into_full_rows(1, 0);
+        let bottom = game.board.height() - 1;
+        let mut steps_seen = vec![game.clear_step()];
+
+        while game.phase() == Phase::LineClear {
+            assert!(game.board.is_row_full(bottom), "not dropped mid-animation");
+            assert_eq!(game.clearing_rows(), &[bottom]);
+            game.tick(idle());
+            if steps_seen.last() != Some(&game.clear_step()) {
+                steps_seen.push(game.clear_step());
+            }
+        }
+
+        assert_eq!(steps_seen, vec![0, 1, 2, 3, 4, 0]);
+        assert!(game.board.is_row_empty(bottom), "dropped once it finished");
+        assert_eq!(game.lines(), 1);
+        assert_eq!(game.phase(), Phase::EntryDelay);
+    }
+
+    #[test]
+    fn only_a_tetris_flashes_and_only_on_animation_steps() {
+        let mut single = lock_into_full_rows(1, 0);
+        let mut tetris = lock_into_full_rows(4, 0);
+        let mut flashes = 0;
+        while tetris.phase() == Phase::LineClear {
+            single.tick(idle());
+            tetris.tick(idle());
+            assert!(!single.tetris_flash());
+            if tetris.tetris_flash() {
+                flashes += 1;
+                assert_eq!(tetris.frame % 4, 0);
+            }
+        }
+        assert_eq!(flashes, 4, "one per visible step");
     }
 
     #[test]

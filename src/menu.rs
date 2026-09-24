@@ -5,56 +5,23 @@
 //! every screen below can be driven by feeding it `MenuInput`s and asserting on
 //! the config it produced.
 //!
-//! Menu keys are deliberately *not* rebindable. They are the way out of a broken
-//! keymap, so binding them to the same table the player is editing would let a
-//! rebind lock them out of the menu that fixes it.
+//! Menu keys have bindings of their own, separate from the gameplay ones, so a
+//! gameplay rebind never changes what a key does on a menu. The arrows, Enter and
+//! Esc work on every menu whatever is bound (`FIXED_MENU_KEYS`), which is what
+//! keeps a menu rebind from locking the player out of the screen that undoes it.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::background::scenes::SceneChoice;
 use crate::background::BackgroundKind;
-use crate::config::Config;
+use crate::config::{Config, MAX_LINE_CLEAR_FRAMES};
 use crate::game::Mode;
 use crate::input::action::Action;
+pub use crate::input::action::MenuInput;
+use crate::input::keymap::MenuKeymap;
+use crate::input::keyname::display_name;
 use crate::scores::MAX_NAME;
 use crate::ui::style::{BorderStyle, Skin, Theme};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuInput {
-    Up,
-    Down,
-    Left,
-    Right,
-    Confirm,
-    Back,
-}
-
-/// Menu navigation from a key event. Arrows and vi keys both work, since the
-/// gameplay bindings default to both.
-///
-/// Chords are deliberately not navigation: in raw mode a terminal delivers Ctrl-D
-/// as `Char('d')` with a modifier, and taking that for "right" would let stray
-/// control input walk the menu. Shift is allowed through because terminals report
-/// it alongside ordinary capitals.
-pub fn menu_input(key: &KeyEvent) -> Option<MenuInput> {
-    if key
-        .modifiers
-        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
-    {
-        return None;
-    }
-
-    let input = match key.code {
-        KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('w') => MenuInput::Up,
-        KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('s') => MenuInput::Down,
-        KeyCode::Left | KeyCode::Char('h') | KeyCode::Char('a') => MenuInput::Left,
-        KeyCode::Right | KeyCode::Char('l') | KeyCode::Char('d') => MenuInput::Right,
-        KeyCode::Enter | KeyCode::Char(' ') => MenuInput::Confirm,
-        KeyCode::Esc | KeyCode::Char('q') => MenuInput::Back,
-        _ => return None,
-    };
-    Some(input)
-}
 
 /// Move a wrapping cursor. Wrapping matters more than it sounds on the options
 /// screen, where the keybind list runs well past the bottom of a short terminal.
@@ -120,8 +87,18 @@ impl TitleMenu {
                 None
             }
             MenuInput::Confirm => Some(TitleItem::ALL[self.selected]),
-            // Backing out of the title screen is how you leave the game.
-            MenuInput::Back => Some(TitleItem::Quit),
+            // Backing out of the title screen points at Quit rather than quitting:
+            // Back is a rotate key by default, and a stray press should not end
+            // the session. A second Back confirms.
+            MenuInput::Back => {
+                let quit = TitleItem::ALL.len() - 1;
+                if self.selected == quit {
+                    Some(TitleItem::Quit)
+                } else {
+                    self.selected = quit;
+                    None
+                }
+            }
         }
     }
 }
@@ -189,20 +166,52 @@ pub enum OptionRow {
     Das,
     Arr,
     Ghost,
+    /// Modern only: NES's line-clear delay is part of its ruleset.
+    LineClear,
     Theme,
     Skin,
     Border,
     Background,
     /// Only shown while the scene background is the selected one.
     Scene,
+    DimBackground,
     Bind(Action),
+    MenuBind(MenuInput),
+}
+
+/// A binding being captured: a gameplay action or a menu input. The two are
+/// separate namespaces, so a key only conflicts with others of its own kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rebind {
+    Game(Action),
+    Menu(MenuInput),
+}
+
+impl Rebind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Rebind::Game(action) => action.label(),
+            Rebind::Menu(input) => input.label(),
+        }
+    }
+}
+
+impl OptionRow {
+    /// The binding this row rebinds, if it is a rebind row.
+    pub fn rebind(self) -> Option<Rebind> {
+        match self {
+            OptionRow::Bind(action) => Some(Rebind::Game(action)),
+            OptionRow::MenuBind(input) => Some(Rebind::Menu(input)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct OptionsMenu {
     pub selected: usize,
-    /// Set while waiting for the next key press to bind to this action.
-    pub rebinding: Option<Action>,
+    /// Set while waiting for the next key press to bind.
+    pub rebinding: Option<Rebind>,
     /// Feedback for the last action — a rejected conflicting key, mostly.
     pub notice: Option<String>,
 }
@@ -222,7 +231,12 @@ impl OptionsMenu {
     pub fn rows(config: &Config) -> Vec<OptionRow> {
         let mut rows = vec![OptionRow::Mode, OptionRow::StartLevel];
         if config.mode == Mode::Modern {
-            rows.extend([OptionRow::Das, OptionRow::Arr, OptionRow::Ghost]);
+            rows.extend([
+                OptionRow::Das,
+                OptionRow::Arr,
+                OptionRow::Ghost,
+                OptionRow::LineClear,
+            ]);
         }
         // The visual axes are independent of the ruleset, so they are offered in
         // both modes.
@@ -232,7 +246,12 @@ impl OptionsMenu {
         if config.background == BackgroundKind::Scene {
             rows.push(OptionRow::Scene);
         }
+        // Blank draws nothing, so there is nothing to dim.
+        if config.background != BackgroundKind::Blank {
+            rows.push(OptionRow::DimBackground);
+        }
         rows.extend(Action::ALL.map(OptionRow::Bind));
+        rows.extend(MenuInput::ALL.map(OptionRow::MenuBind));
         rows
     }
 
@@ -258,15 +277,15 @@ impl OptionsMenu {
             }
             MenuInput::Left => self.adjust(row, config, false),
             MenuInput::Right => self.adjust(row, config, true),
-            MenuInput::Confirm => match row {
-                OptionRow::Bind(action) => {
-                    self.rebinding = Some(action);
+            MenuInput::Confirm => match row.rebind() {
+                Some(rebind) => {
+                    self.rebinding = Some(rebind);
                     self.notice = None;
                     OptionsOutcome::Stay
                 }
                 // Confirm on a value row is the same as nudging it forward, so
                 // Enter is never a dead key.
-                other => self.adjust(other, config, true),
+                None => self.adjust(row, config, true),
             },
             MenuInput::Back => OptionsOutcome::Back,
         }
@@ -304,9 +323,13 @@ impl OptionsMenu {
                 config.arr_frames = nudge(config.arr_frames, forward);
             }
             OptionRow::Ghost => config.ghost = !config.ghost,
+            OptionRow::LineClear => {
+                config.line_clear_frames = step_line_clear(config.line_clear_frames, forward);
+            }
             OptionRow::Theme => config.theme = cycle(config.theme, &Theme::ALL, forward),
             OptionRow::Skin => config.skin = cycle(config.skin, &Skin::ALL, forward),
             OptionRow::Border => config.border = cycle(config.border, &BorderStyle::ALL, forward),
+            OptionRow::DimBackground => config.dim_background = !config.dim_background,
             OptionRow::Background => {
                 config.background = cycle(config.background, &BackgroundKind::ALL, forward);
                 // Leaving the scene background removes a row below this one.
@@ -315,19 +338,27 @@ impl OptionsMenu {
             }
             OptionRow::Scene => config.scene = cycle(config.scene, &SceneChoice::ALL, forward),
             // Rebinding is driven by `capture`, not by the direction keys.
-            OptionRow::Bind(_) => return OptionsOutcome::Stay,
+            OptionRow::Bind(_) | OptionRow::MenuBind(_) => return OptionsOutcome::Stay,
         }
         OptionsOutcome::Changed
     }
 
-    /// Take the next key press as the new binding for the action being rebound.
+    /// Take the next key press as the new binding for whatever is being rebound.
     ///
     /// Esc cancels. A key already bound elsewhere is rejected with a notice rather
-    /// than silently stealing it, which would leave the other action unreachable.
+    /// than silently stealing it, which would leave the other binding unreachable.
+    /// Conflicts are only checked within the same keymap, so a key can both
+    /// rotate and confirm.
     pub fn capture(&mut self, key: &KeyEvent, config: &mut Config) -> OptionsOutcome {
-        let Some(action) = self.rebinding else {
+        let Some(rebind) = self.rebinding else {
             return OptionsOutcome::Stay;
         };
+
+        // A terminal reporting every key sends Shift and friends on their own
+        // too; a modifier is part of the key being pressed, not the key itself.
+        if matches!(key.code, KeyCode::Modifier(_)) {
+            return OptionsOutcome::Stay;
+        }
 
         if key.code == KeyCode::Esc {
             self.rebinding = None;
@@ -335,26 +366,36 @@ impl OptionsMenu {
             return OptionsOutcome::Stay;
         }
 
-        match config.keymap().action_for(key) {
-            Some(existing) if existing != action => {
-                self.notice = Some(format!(
-                    "{} is already bound to {}",
-                    crate::input::keyname::display_name(key.code),
-                    existing.label()
-                ));
-                OptionsOutcome::Stay
+        let name = display_name(key.code);
+        let conflict = match rebind {
+            Rebind::Game(action) => config
+                .keymap()
+                .action_for(key)
+                .filter(|&existing| existing != action)
+                .map(|existing| existing.label()),
+            Rebind::Menu(_) if MenuKeymap::is_fixed(key.code) => {
+                self.notice = Some(format!("{name} already works on every menu"));
+                return OptionsOutcome::Stay;
             }
-            _ => {
-                config.set_binding(action, &[key.code]);
-                self.rebinding = None;
-                self.notice = Some(format!(
-                    "{} bound to {}",
-                    action.label(),
-                    crate::input::keyname::display_name(key.code)
-                ));
-                OptionsOutcome::Changed
-            }
+            Rebind::Menu(input) => config
+                .menu_keymap()
+                .input_for(key)
+                .filter(|&existing| existing != input)
+                .map(|existing| existing.label()),
+        };
+
+        if let Some(existing) = conflict {
+            self.notice = Some(format!("{name} is already bound to {existing}"));
+            return OptionsOutcome::Stay;
         }
+
+        match rebind {
+            Rebind::Game(action) => config.set_binding(action, &[key.code]),
+            Rebind::Menu(input) => config.set_menu_binding(input, &[key.code]),
+        }
+        self.rebinding = None;
+        self.notice = Some(format!("{} bound to {name}", rebind.label()));
+        OptionsOutcome::Changed
     }
 }
 
@@ -371,6 +412,18 @@ fn nudge(frames: u32, forward: bool) -> u32 {
         (frames + 1).min(MAX_DELAY_FRAMES)
     } else {
         frames.saturating_sub(1).max(1)
+    }
+}
+
+/// Line-clear delay moves in steps of five frames, from instant up to a second.
+/// Unlike DAS and ARR, zero is a real choice here: it is the instant clear.
+fn step_line_clear(frames: u32, forward: bool) -> u32 {
+    const STEP: u32 = 5;
+    let frames = frames.min(MAX_LINE_CLEAR_FRAMES) / STEP * STEP;
+    if forward {
+        (frames + STEP).min(MAX_LINE_CLEAR_FRAMES)
+    } else {
+        frames.saturating_sub(STEP)
     }
 }
 
@@ -517,41 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn arrows_and_vi_keys_both_navigate() {
-        assert_eq!(menu_input(&key(KeyCode::Up)), Some(MenuInput::Up));
-        assert_eq!(menu_input(&key(KeyCode::Char('k'))), Some(MenuInput::Up));
-        assert_eq!(menu_input(&key(KeyCode::Char('j'))), Some(MenuInput::Down));
-        assert_eq!(menu_input(&key(KeyCode::Enter)), Some(MenuInput::Confirm));
-        assert_eq!(menu_input(&key(KeyCode::Esc)), Some(MenuInput::Back));
-        assert_eq!(menu_input(&key(KeyCode::Char('q'))), Some(MenuInput::Back));
-        assert_eq!(menu_input(&key(KeyCode::F(7))), None);
-    }
-
-    /// Ctrl-D reaches a raw-mode terminal as `Char('d')`, which is also the "right"
-    /// key: without the modifier check it would walk the menu on its own.
-    #[test]
-    fn control_chords_are_not_navigation() {
-        for code in [KeyCode::Char('d'), KeyCode::Char('j'), KeyCode::Char('c')] {
-            let chord = KeyEvent {
-                modifiers: KeyModifiers::CONTROL,
-                ..key(code)
-            };
-            assert_eq!(menu_input(&chord), None, "{code:?}");
-        }
-    }
-
-    /// Shift is different: terminals report it alongside plain capitals, so it must
-    /// not disable navigation.
-    #[test]
-    fn shift_still_navigates() {
-        let shifted = KeyEvent {
-            modifiers: KeyModifiers::SHIFT,
-            ..key(KeyCode::Down)
-        };
-        assert_eq!(menu_input(&shifted), Some(MenuInput::Down));
-    }
-
-    #[test]
     fn the_title_cursor_wraps_in_both_directions() {
         let mut menu = TitleMenu::default();
         menu.navigate(MenuInput::Up);
@@ -568,10 +586,13 @@ mod tests {
         assert_eq!(menu.navigate(MenuInput::Confirm), Some(TitleItem::Options));
     }
 
-    /// Escape on the title screen is how you leave the game.
+    /// Back is a rotate key by default, so one stray press on the title screen
+    /// only points at Quit; a second one leaves.
     #[test]
-    fn backing_out_of_the_title_quits() {
+    fn backing_out_of_the_title_points_at_quit_then_quits() {
         let mut menu = TitleMenu::default();
+        assert_eq!(menu.navigate(MenuInput::Back), None);
+        assert_eq!(TitleItem::ALL[menu.selected], TitleItem::Quit);
         assert_eq!(menu.navigate(MenuInput::Back), Some(TitleItem::Quit));
     }
 
@@ -589,12 +610,14 @@ mod tests {
         let nes = OptionsMenu::rows(&config);
         assert!(!nes.contains(&OptionRow::Das));
         assert!(!nes.contains(&OptionRow::Ghost));
+        assert!(!nes.contains(&OptionRow::LineClear));
 
         config.mode = Mode::Modern;
         let modern = OptionsMenu::rows(&config);
         assert!(modern.contains(&OptionRow::Das));
         assert!(modern.contains(&OptionRow::Arr));
         assert!(modern.contains(&OptionRow::Ghost));
+        assert!(modern.contains(&OptionRow::LineClear));
     }
 
     #[test]
@@ -629,7 +652,7 @@ mod tests {
 
         // The same cursor, now against the shorter list.
         modern.mode = Mode::Nes;
-        assert!(matches!(menu.row(&modern), OptionRow::Bind(_)));
+        assert!(matches!(menu.row(&modern), OptionRow::MenuBind(_)));
         menu.navigate(MenuInput::Down, &mut modern);
         assert!(menu.selected < OptionsMenu::rows(&modern).len());
     }
@@ -689,6 +712,32 @@ mod tests {
             menu.navigate(MenuInput::Right, &mut config);
         }
         assert_eq!(config.arr_frames, MAX_DELAY_FRAMES);
+    }
+
+    /// Zero is a real setting here — the instant clear — unlike DAS and ARR.
+    #[test]
+    fn the_line_clear_delay_steps_from_instant_to_a_second() {
+        let mut config = config(Mode::Modern);
+        let rows = OptionsMenu::rows(&config);
+        let mut menu = OptionsMenu {
+            selected: rows
+                .iter()
+                .position(|r| *r == OptionRow::LineClear)
+                .unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(config.line_clear_frames, 0, "instant by default");
+
+        menu.navigate(MenuInput::Right, &mut config);
+        assert_eq!(config.line_clear_frames, 5);
+        for _ in 0..40 {
+            menu.navigate(MenuInput::Right, &mut config);
+        }
+        assert_eq!(config.line_clear_frames, MAX_LINE_CLEAR_FRAMES);
+        for _ in 0..40 {
+            menu.navigate(MenuInput::Left, &mut config);
+        }
+        assert_eq!(config.line_clear_frames, 0);
     }
 
     /// The visual axes are ruleset-independent, so both modes offer all three.
@@ -773,7 +822,7 @@ mod tests {
         };
 
         menu.navigate(MenuInput::Confirm, &mut config);
-        assert_eq!(menu.rebinding, Some(Action::RotateCw));
+        assert_eq!(menu.rebinding, Some(Rebind::Game(Action::RotateCw)));
 
         let outcome = menu.capture(&key(KeyCode::Char('n')), &mut config);
         assert_eq!(outcome, OptionsOutcome::Changed);
@@ -790,13 +839,17 @@ mod tests {
     fn a_conflicting_key_is_refused_with_a_notice() {
         let mut config = Config::default();
         let mut menu = OptionsMenu {
-            rebinding: Some(Action::RotateCw),
+            rebinding: Some(Rebind::Game(Action::RotateCw)),
             ..Default::default()
         };
 
         let outcome = menu.capture(&key(KeyCode::Char('q')), &mut config);
         assert_eq!(outcome, OptionsOutcome::Stay);
-        assert_eq!(menu.rebinding, Some(Action::RotateCw), "still rebinding");
+        assert_eq!(
+            menu.rebinding,
+            Some(Rebind::Game(Action::RotateCw)),
+            "still rebinding"
+        );
         assert!(menu.notice.unwrap().contains("Quit"));
         assert_eq!(
             config.keymap().action_for(&key(KeyCode::Char('q'))),
@@ -810,13 +863,13 @@ mod tests {
     fn rebinding_to_its_own_existing_key_is_allowed() {
         let mut config = Config::default();
         let mut menu = OptionsMenu {
-            rebinding: Some(Action::RotateCw),
+            rebinding: Some(Rebind::Game(Action::RotateCw)),
             ..Default::default()
         };
-        let outcome = menu.capture(&key(KeyCode::Char('x')), &mut config);
+        let outcome = menu.capture(&key(KeyCode::Char('k')), &mut config);
         assert_eq!(outcome, OptionsOutcome::Changed);
         assert_eq!(
-            config.keymap().action_for(&key(KeyCode::Char('x'))),
+            config.keymap().action_for(&key(KeyCode::Char('k'))),
             Some(Action::RotateCw)
         );
     }
@@ -826,7 +879,7 @@ mod tests {
         let mut config = Config::default();
         let before = config.bindings.clone();
         let mut menu = OptionsMenu {
-            rebinding: Some(Action::Hold),
+            rebinding: Some(Rebind::Game(Action::Hold)),
             ..Default::default()
         };
 
@@ -836,6 +889,104 @@ mod tests {
         );
         assert_eq!(menu.rebinding, None);
         assert_eq!(config.bindings, before);
+    }
+
+    #[test]
+    fn every_menu_input_gets_a_rebind_row_after_the_gameplay_ones() {
+        let rows = OptionsMenu::rows(&Config::default());
+        let last_game = rows
+            .iter()
+            .rposition(|r| matches!(r, OptionRow::Bind(_)))
+            .unwrap();
+        for input in MenuInput::ALL {
+            let at = rows.iter().position(|r| *r == OptionRow::MenuBind(input));
+            assert!(at.is_some_and(|at| at > last_game), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn a_menu_input_can_be_rebound() {
+        let mut config = Config::default();
+        let rows = OptionsMenu::rows(&config);
+        let mut menu = OptionsMenu {
+            selected: rows
+                .iter()
+                .position(|r| *r == OptionRow::MenuBind(MenuInput::Confirm))
+                .unwrap(),
+            ..Default::default()
+        };
+
+        menu.navigate(MenuInput::Confirm, &mut config);
+        assert_eq!(menu.rebinding, Some(Rebind::Menu(MenuInput::Confirm)));
+        let outcome = menu.capture(&key(KeyCode::Char('l')), &mut config);
+        assert_eq!(outcome, OptionsOutcome::Changed);
+        assert_eq!(
+            config.menu_keymap().input_for(&key(KeyCode::Char('l'))),
+            Some(MenuInput::Confirm)
+        );
+    }
+
+    /// The two keymaps are separate namespaces: `k` rotating a piece does not stop
+    /// it confirming a menu choice, and binding a gameplay key never touches the
+    /// menu ones.
+    #[test]
+    fn menu_and_gameplay_bindings_only_conflict_within_their_own_kind() {
+        let mut config = Config::default();
+        let mut menu = OptionsMenu {
+            rebinding: Some(Rebind::Menu(MenuInput::Back)),
+            ..Default::default()
+        };
+        // `p` is gameplay's pause, but free on the menus.
+        assert_eq!(
+            menu.capture(&key(KeyCode::Char('p')), &mut config),
+            OptionsOutcome::Changed
+        );
+
+        // `w` is already menu up, so menu confirm cannot take it.
+        menu.rebinding = Some(Rebind::Menu(MenuInput::Confirm));
+        assert_eq!(
+            menu.capture(&key(KeyCode::Char('w')), &mut config),
+            OptionsOutcome::Stay
+        );
+        assert!(menu.notice.as_deref().unwrap().contains("Menu up"));
+        assert_eq!(
+            config.keymap().action_for(&key(KeyCode::Char('p'))),
+            Some(Action::Pause),
+            "the gameplay binding is untouched"
+        );
+    }
+
+    /// The arrows, Enter and Esc work on every menu regardless; binding one would
+    /// either do nothing or take away the way out.
+    #[test]
+    fn a_fixed_menu_key_cannot_be_bound() {
+        let mut config = Config::default();
+        let before = config.menu_bindings.clone();
+        let mut menu = OptionsMenu {
+            rebinding: Some(Rebind::Menu(MenuInput::Back)),
+            ..Default::default()
+        };
+        assert_eq!(
+            menu.capture(&key(KeyCode::Enter), &mut config),
+            OptionsOutcome::Stay
+        );
+        assert_eq!(menu.rebinding, Some(Rebind::Menu(MenuInput::Back)));
+        assert_eq!(config.menu_bindings, before);
+    }
+
+    /// With every key reported, Shift arrives on its own before the capital it
+    /// is part of; it must not become the binding.
+    #[test]
+    fn a_bare_modifier_is_not_captured() {
+        use crossterm::event::ModifierKeyCode;
+        let mut config = Config::default();
+        let mut menu = OptionsMenu {
+            rebinding: Some(Rebind::Game(Action::Hold)),
+            ..Default::default()
+        };
+        let shift = key(KeyCode::Modifier(ModifierKeyCode::LeftShift));
+        assert_eq!(menu.capture(&shift, &mut config), OptionsOutcome::Stay);
+        assert_eq!(menu.rebinding, Some(Rebind::Game(Action::Hold)));
     }
 
     #[test]

@@ -19,13 +19,15 @@ Done so far:
 - **NES ruleset**: the ROM's Nintendo Rotation System tables (no wall kicks), the
   ROM's LFSR piece randomiser (droughts and per-piece bias included), the
   frames-per-row gravity table, DAS charge/repeat with wall charge and
-  carry-through-entry-delay, entry delay banding, line-clear delay, scoring and
+  carry-through-entry-delay, entry delay banding, the ROM's centre-out line-clear
+  animation (17-20 frames, timed off the global frame counter) with the Tetris
+  flash, scoring and
   level progression
 - **Modern (Guideline) ruleset**: SRS with both wall-kick tables, 7-bag with a
   preview queue, hold, ghost piece, hard drop, 500ms lock delay with the 15-reset
   cap, T-spin and mini detection including the fifth-kick promotion, and scoring
-  with back-to-back, combos and perfect clears
-- Fixed 60 Hz tick loop, rebindable action-based input, Kitty keyboard-protocol
+  with back-to-back, combos and perfect clears, plus an optional line-clear delay
+- Fixed 60 Hz tick loop, rebindable gameplay and menu keys, Kitty keyboard-protocol
   detection with a timeout fallback
 - Board and HUD rendering at two terminal columns per cell, transparency-safe
 - Responsive layout that sheds panels as the terminal shrinks
@@ -90,10 +92,11 @@ Title ──► Playing ⇄ Paused ──► Game over ──► Title
   └─► High scores
 ```
 
-Menus are driven by arrow keys or `hjkl`, `Enter` to select and `Esc` to go
-back; `q` on the title screen quits, and `Ctrl-C` leaves from anywhere. Those
-keys are fixed rather than rebindable, so a keybinding you regret can always be
-undone from the menu it was made in.
+Menus use `w` `a` `s` `d` to move, `j` to confirm and `k` to go back, so the
+rotate keys double as confirm and back. The arrows, `Enter` and `Esc` also work
+on every menu and cannot be rebound, so a menu binding you regret can always be
+undone. `Esc` (or `k`) on the title screen points at Quit, and a second press
+quits; `Ctrl-C` leaves from anywhere.
 
 During a run, `q` abandons it and returns to the title — an abandoned run is not
 scored. Topping out is, and a run that makes its mode's top ten asks for a name.
@@ -107,18 +110,27 @@ changes:
 - **Starting level** — remembered separately per mode (NES 0-29, modern 1-20)
 - **DAS / ARR / ghost piece** — modern only. NES's equivalents are fixed by its
   ruleset, so they are not offered
+- **Line clear delay** — modern only: how long cleared rows stay up, erasing
+  from the centre out, before the rows above drop. `instant` (the default) up to
+  60 frames in steps of 5. Games differ here: the Guideline sets no value,
+  TETR.IO and Jstris clear instantly, and Puyo Puyo Tetris takes 35-45 frames.
+  NES always uses its own 17-20 frame animation
 - **Colour theme** — `Guideline` is the published piece palette in 24-bit colour;
   `System ANSI` uses the terminal's own 16 colours, which is the one to pick on a
   terminal without truecolor
-- **Tetromino skin** — `Solid`, `Shaded`, `Outlined`, `ASCII` (`[]` per cell) or
+- **Tetromino skin** — `Solid`, `Shaded`, `ASCII` (`[]` per cell) or
   `Letters` (the piece's own letter, which identifies pieces without colour)
 - **Board border** — `None`, `ASCII`, `Single`, `Double`, `Rounded` or `Heavy`,
-  applied to the menus as well as the board
+  applied to the menus as well as the board. `ASCII` also spells out the arrows
+  and symbols in menu text
 - **Background** — drawn behind the field, never inside the playfield or the HUD
   panels. With either ASCII option picked they keep to ASCII glyphs too.
   - `Blank` — nothing, which keeps terminal transparency
   - `Scene` — a still scene, with a picker, or `Random` for one per session
-  - `Distro logo` — your distribution's logo, read from `/etc/os-release`
+  - `Distro logo` — your distribution's logo, read from `/etc/os-release`, a few
+    copies scattered at random like polka dots. The logos are fastfetch's small
+    ones, in fastfetch's colours. NixOS's uses block characters, so with an ASCII
+    option picked it falls back to fastfetch's older line-art NixOS logo
   - `Matrix rain` — cmatrix's falling columns
   - `Pipes` — pipes.sh, drawn in the board's border style
   - `Nyancat` — an occasional visitor, its rainbow in the theme's colours
@@ -128,14 +140,18 @@ changes:
     combo, gets smug on back-to-back and nervous as the stack nears the top
   - `Locomotive` — sl's steam train every so often, and always one when a run
     tops out
-- **Key bindings** — `Enter` on a row, then press the key. A key already bound to
-  something else is refused rather than silently stolen
+  - `dimmed` — on by default, and shown for every background but `Blank`: draws
+    the background at reduced brightness so it stays behind the board
+- **Key bindings** — gameplay first, then the menu keys. `Enter` on a row, then
+  press the key. The two lists are separate, so one key can both rotate and
+  confirm; within a list, a key already bound to something else is refused rather
+  than silently stolen
 
 ## Files
 
 | Path | Contents |
 |---|---|
-| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, theme, skin, border, background, bindings |
+| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, line clear delay, theme, skin, border, bold text, background and its dimming, gameplay and menu bindings |
 | `~/.local/share/tetris-tui/scores.toml` | two top-10 tables, NES and modern kept apart |
 
 Both are plain TOML and meant to be hand-editable, so a mistake costs only
@@ -149,14 +165,14 @@ is re-sorted on load, and both files are written atomically.
 
 | Key | Action | |
 |---|---|---|
-| `←` / `h` | move left | |
-| `→` / `l` | move right | |
-| `↓` / `j` | soft drop | 1 point per row |
-| `Space` | hard drop | modern only, 2 points per row |
-| `x` / `↑` | rotate clockwise | |
-| `z` | rotate counter-clockwise | |
-| `c` / `Tab` | hold | modern only |
-| `p` / `Esc` | pause | |
+| `a` / `←` | move left | |
+| `d` / `→` | move right | |
+| `s` / `↓` | soft drop | 1 point per row |
+| `w` / `↑` | hard drop | modern only, 2 points per row |
+| `k` | rotate clockwise | the NES pad's A |
+| `j` | rotate counter-clockwise | the NES pad's B |
+| `Space` | hold | modern only |
+| `p` / `Esc` | pause | press again to resume |
 | `q` | quit to title | |
 
 NES mode has no hard drop, no hold and no ghost piece — that is the ruleset, not

@@ -45,23 +45,34 @@ pub fn render(buf: &mut Buffer, area: Rect, game: &Game, visuals: &Visuals) {
     let clearing_rows = game.clearing_rows();
     let top = board.visible_top();
 
+    // Clearing rows are erased from the centre outward, as NES does it: after
+    // `step` steps, that many columns either side of the middle are gone.
+    let step = game.clear_step() as usize;
+    let centre = board.width() / 2;
+    let erased = |x: usize| x + step >= centre && x < centre + step;
+    // A Tetris flashes the empty field solid for a frame at a time. It is the one
+    // place empty cells are painted, and only for a frame, so transparency is
+    // back straight after.
+    let flash = game.tetris_flash();
+
     for y in top..board.height() {
         let row = (y - top) as u16;
-
-        if clearing_rows.contains(&y) {
-            // Flash a cleared row as a solid bar, the NES line-clear tell.
-            for x in 0..board.width() as u16 {
-                let style = Style::default().fg(visuals.theme.flash());
-                paint_cell(buf, area, x, row, visuals.skin.flash(), style);
-            }
-            continue;
-        }
+        let clearing = clearing_rows.contains(&y);
 
         for x in 0..board.width() {
-            let (glyphs, style) = match board.get(x as i32, y as i32) {
+            let cell = if clearing && erased(x) {
+                None
+            } else {
+                board.get(x as i32, y as i32)
+            };
+            let (glyphs, style) = match cell {
                 Some(kind) => (
                     visuals.skin.cell(kind, CellRole::Filled),
                     Style::default().fg(visuals.theme.color(kind)),
+                ),
+                None if flash => (
+                    visuals.skin.flash(),
+                    Style::default().fg(visuals.theme.flash()),
                 ),
                 // Untouched background: keeps terminal transparency intact.
                 None => (
@@ -188,16 +199,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn clearing_rows_render_as_a_flash() {
+    /// Fill the bottom `rows` rows and soft drop until a piece locks, which puts
+    /// them into the clear animation.
+    fn game_mid_clear(rows: i32) -> Game {
         let mut game = Game::new(Mode::Nes, 0);
         let bottom = game.board().height() as i32 - 1;
-        for x in 0..10 {
-            game.board_mut().set(x, bottom, Some(PieceKind::I));
+        for y in bottom - rows + 1..=bottom {
+            for x in 0..10 {
+                game.board_mut().set(x, y, Some(PieceKind::I));
+            }
         }
-
-        // Soft drop until a piece locks, which puts the already-full row into the
-        // clear animation.
         let down = Input {
             soft_drop: true,
             ..Default::default()
@@ -208,10 +219,37 @@ mod tests {
             }
         }
         assert!(!game.clearing_rows().is_empty(), "expected a row mid-clear");
+        game
+    }
+
+    #[test]
+    fn clearing_rows_erase_from_the_centre_outward() {
+        let mut game = game_mid_clear(1);
+        while game.clear_step() < 2 {
+            game.tick(Input::default());
+        }
 
         let buf = draw(&game);
-        let row = (bottom - game.board().visible_top() as i32) as u16;
-        assert_eq!(buf[(0, row)].fg, Theme::default().flash());
+        let row = game.board().height() as u16 - 1 - game.board().visible_top() as u16;
+        let filled = |col: u16| buf[(col * CELL_WIDTH, row)].symbol() == "█";
+        for col in 3..=6 {
+            assert!(!filled(col), "column {col} should be erased by step 2");
+        }
+        for col in [0, 1, 2, 7, 8, 9] {
+            assert!(filled(col), "column {col} should still be showing");
+        }
+    }
+
+    #[test]
+    fn a_tetris_flashes_the_empty_field() {
+        let mut game = game_mid_clear(4);
+        while !game.tetris_flash() {
+            game.tick(Input::default());
+        }
+        let buf = draw(&game);
+        // The top-left cell is empty, and painted solid for the flash.
+        assert_eq!(buf[(0, 0)].fg, Theme::default().flash());
+        assert_eq!(buf[(0, 0)].symbol(), "█");
     }
 
     /// Modern mode draws a ghost; NES has none.

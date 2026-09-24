@@ -23,7 +23,7 @@ use crossterm::terminal::{
 use crossterm::{execute, ExecutableCommand};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Margin, Rect, Size};
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
@@ -34,10 +34,10 @@ use crate::config::Config;
 use crate::game::{Game, Input, Mode};
 use crate::input::action::Action;
 use crate::input::held::{HeldKeys, TimingMode};
-use crate::input::keymap::Keymap;
+use crate::input::keymap::{Keymap, MenuKeymap};
 use crate::menu::{
-    menu_input, GameOverItem, GameOverMenu, MenuInput, OptionsMenu, OptionsOutcome, PauseItem,
-    PauseMenu, ScoresView, TitleItem, TitleMenu,
+    GameOverItem, GameOverMenu, MenuInput, OptionsMenu, OptionsOutcome, PauseItem, PauseMenu,
+    ScoresView, TitleItem, TitleMenu,
 };
 use crate::scores::{today, Entry, Scores};
 use crate::ui::{board_view, hud, layout, menu as menu_ui};
@@ -73,6 +73,7 @@ pub struct App {
     config: Config,
     scores: Scores,
     keymap: Keymap,
+    menu_keys: MenuKeymap,
     held: HeldKeys,
     /// Edge-triggered actions collected since the last tick.
     pressed: Vec<Action>,
@@ -102,6 +103,7 @@ impl App {
             state: AppState::Title(TitleMenu::default()),
             game: None,
             keymap: config.keymap(),
+            menu_keys: config.menu_keymap(),
             held: HeldKeys::new(timing),
             pressed: Vec::new(),
             should_quit: false,
@@ -159,6 +161,7 @@ impl App {
         // Rebinding applies immediately; the modern timing settings are read when
         // a run starts, so changing them mid-run affects the next one.
         self.keymap = self.config.keymap();
+        self.menu_keys = self.config.menu_keymap();
         // Rebuilding re-rolls a random scene, so it must happen only when the
         // background setting itself changed.
         let wanted = (self.config.background, self.config.scene);
@@ -213,7 +216,7 @@ impl App {
             KeyEventKind::Press => self.handle_menu_key(key),
             // Autorepeat walks a menu the way it scrolls anything else, but only
             // for movement: a held Enter or Esc must not fire twice.
-            KeyEventKind::Repeat if is_movement(&key) => self.handle_menu_key(key),
+            KeyEventKind::Repeat if self.is_movement(&key) => self.handle_menu_key(key),
             KeyEventKind::Repeat => {}
             // A key let go while a menu is up still has to register as released,
             // or it would come back held when play resumes.
@@ -248,8 +251,17 @@ impl App {
         }
     }
 
-    /// Menu screens are driven by their own fixed keys rather than the rebindable
-    /// gameplay map — see the note in `crate::menu`.
+    /// Whether a key moves a menu cursor or value, as opposed to confirming or
+    /// leaving — the distinction autorepeat needs.
+    fn is_movement(&self, key: &KeyEvent) -> bool {
+        matches!(
+            self.menu_keys.input_for(key),
+            Some(MenuInput::Up | MenuInput::Down | MenuInput::Left | MenuInput::Right)
+        )
+    }
+
+    /// Menu screens are driven by the menu keymap rather than the gameplay one —
+    /// see the note in `crate::menu`.
     fn handle_menu_key(&mut self, key: KeyEvent) {
         // The state is moved out so each handler can take `&mut self` for the
         // config, scores and game it needs; anything that does not transition is
@@ -267,7 +279,7 @@ impl App {
     }
 
     fn title_key(&mut self, menu: &mut TitleMenu, key: KeyEvent) -> Option<AppState> {
-        match menu.navigate(menu_input(&key)?)? {
+        match menu.navigate(self.menu_keys.input_for(&key)?)? {
             TitleItem::Play => {
                 self.start_run();
                 Some(AppState::Playing)
@@ -290,7 +302,7 @@ impl App {
             // is deliberately bypassed here.
             menu.capture(&key, &mut self.config)
         } else {
-            menu.navigate(menu_input(&key)?, &mut self.config)
+            menu.navigate(self.menu_keys.input_for(&key)?, &mut self.config)
         };
 
         match outcome {
@@ -307,7 +319,7 @@ impl App {
     }
 
     fn scores_key(&mut self, view: &mut ScoresView, key: KeyEvent) -> Option<AppState> {
-        view.navigate(menu_input(&key)?)
+        view.navigate(self.menu_keys.input_for(&key)?)
             .then(|| AppState::Title(TitleMenu::default()))
     }
 
@@ -317,7 +329,7 @@ impl App {
             return Some(AppState::Playing);
         }
 
-        match menu.navigate(menu_input(&key)?)? {
+        match menu.navigate(self.menu_keys.input_for(&key)?)? {
             PauseItem::Resume => {
                 // Holds from before the pause are stale by now.
                 self.held.clear();
@@ -358,7 +370,7 @@ impl App {
             return None;
         }
 
-        match menu.navigate(menu_input(&key)?)? {
+        match menu.navigate(self.menu_keys.input_for(&key)?)? {
             GameOverItem::Retry => {
                 self.start_run();
                 Some(AppState::Playing)
@@ -499,6 +511,13 @@ impl App {
                 );
             }
         }
+
+        // Bold is applied as a last pass over everything drawn, rather than in
+        // each widget: kitty and most terminals give bold its own heavier face,
+        // which is what keeps thin glyphs legible over a busy background.
+        for cell in frame.buffer_mut().content.iter_mut() {
+            cell.modifier.insert(Modifier::BOLD);
+        }
     }
 
     /// Draws whatever is behind everything else, keeping out of the board and
@@ -524,6 +543,14 @@ impl App {
         let visuals = self.config.visuals();
         let mut canvas = Canvas::new(frame.buffer_mut(), area, &reserved);
         self.background.render(&mut canvas, &visuals, &signal);
+
+        // Every background dims itself so it sits behind the board. Nothing else
+        // is in the buffer yet, so turning that off is a pass over what it drew.
+        if !self.config.dim_background {
+            for cell in frame.buffer_mut().content.iter_mut() {
+                cell.modifier.remove(Modifier::DIM);
+            }
+        }
     }
 
     /// Draws the playfield and its panels, returning the board's interior so an
@@ -581,15 +608,6 @@ impl App {
 
         Some(interior)
     }
-}
-
-/// Whether a key moves a menu cursor or value, as opposed to confirming or
-/// leaving — the distinction autorepeat needs.
-fn is_movement(key: &KeyEvent) -> bool {
-    matches!(
-        menu_input(key),
-        Some(MenuInput::Up | MenuInput::Down | MenuInput::Left | MenuInput::Right)
-    )
 }
 
 pub fn run(mode: Option<Mode>, start_level: Option<u32>) -> io::Result<()> {
@@ -659,8 +677,17 @@ fn setup(precise: bool) -> io::Result<Terminal<Backend>> {
     execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
     if precise {
         // Real press/release events, which is what makes DAS frame-accurate.
+        //
+        // Event types alone are not enough: kitty keeps sending plain text keys
+        // and Esc in the legacy encoding, which has no release or repeat form, so
+        // a letter key would never be released and every Esc repeat or release
+        // would arrive as a fresh press. Reporting every key as an escape code
+        // fixes both; alternate keys keep shifted letters arriving as capitals.
         stdout.execute(PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS,
         ))?;
     }
 
@@ -740,8 +767,10 @@ mod tests {
     }
 
     #[test]
-    fn quitting_from_the_title_screen_ends_the_program() {
+    fn backing_out_of_the_title_screen_twice_ends_the_program() {
         let mut app = title_app();
+        send(&mut app, KeyCode::Esc);
+        assert!(!app.should_quit, "one stray back only points at Quit");
         send(&mut app, KeyCode::Esc);
         assert!(app.should_quit);
     }
@@ -817,8 +846,11 @@ mod tests {
         assert!(!app.should_quit, "one q leaves the run, not the program");
         assert!(matches!(app.state, AppState::Title(_)));
 
-        send(&mut app, KeyCode::Char('q'));
-        assert!(app.should_quit, "a second q leaves the program");
+        // Back on the title only points at Quit; a second one leaves.
+        send(&mut app, KeyCode::Esc);
+        assert!(!app.should_quit);
+        send(&mut app, KeyCode::Esc);
+        assert!(app.should_quit, "then backing out twice leaves the program");
     }
 
     /// Raw mode swallows the terminal's interrupt, so the app has to honour it
@@ -873,7 +905,7 @@ mod tests {
     fn autorepeat_does_not_retrigger_rotation() {
         let mut app = App::headless(Mode::Nes, 0, TimingMode::Precise);
         app.handle_event(
-            key_event(KeyCode::Char('x'), KeyEventKind::Repeat),
+            key_event(KeyCode::Char('k'), KeyEventKind::Repeat),
             Instant::now(),
         );
         assert!(
@@ -886,7 +918,7 @@ mod tests {
     fn a_press_queues_exactly_one_rotation() {
         let mut app = App::headless(Mode::Nes, 0, TimingMode::Precise);
         let now = Instant::now();
-        app.handle_event(press(KeyCode::Char('x')), now);
+        app.handle_event(press(KeyCode::Char('k')), now);
         assert_eq!(app.pressed, vec![Action::RotateCw]);
         app.tick(now);
         assert!(app.pressed.is_empty(), "pressed actions clear each tick");
@@ -971,7 +1003,7 @@ mod tests {
         let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
         // Hard drops score, so the run is worth recording.
         for _ in 0..3 {
-            send(&mut app, KeyCode::Char(' '));
+            send(&mut app, KeyCode::Char('w'));
         }
         let score = app.game.as_ref().unwrap().score();
         assert!(score > 0, "the run should have scored something");
@@ -1035,19 +1067,70 @@ mod tests {
         assert!(matches!(app.state, AppState::Title(_)));
     }
 
-    /// The menu module owns navigation; this only pins that the app hands it the
-    /// same inputs the player produces.
+    /// Enter always confirms; `j` does too by default, so one key both rotates
+    /// and confirms.
     #[test]
-    fn enter_and_space_both_confirm() {
-        for code in [KeyCode::Enter, KeyCode::Char(' ')] {
-            let key = KeyEvent {
-                code,
-                modifiers: KeyModifiers::NONE,
-                kind: KeyEventKind::Press,
-                state: KeyEventState::NONE,
-            };
-            assert_eq!(menu_input(&key), Some(MenuInput::Confirm));
+    fn enter_and_the_rotate_key_both_confirm() {
+        for code in [KeyCode::Enter, KeyCode::Char('j')] {
+            let mut app = title_app();
+            send(&mut app, code);
+            assert!(matches!(app.state, AppState::Playing), "{code:?}");
         }
+    }
+
+    #[test]
+    fn a_menu_rebind_takes_effect_immediately() {
+        let mut app = title_app();
+        app.config
+            .set_menu_binding(MenuInput::Down, &[KeyCode::Char('n')]);
+        app.apply_config();
+
+        send(&mut app, KeyCode::Char('n'));
+        let AppState::Title(menu) = &app.state else {
+            panic!("still on the title screen");
+        };
+        assert_eq!(menu.selected, 1);
+    }
+
+    /// In kitty, Esc left the options screen and its release, arriving as a
+    /// second Esc press, quit from the title. The cause was the keyboard-protocol
+    /// flags in `setup`, which a headless test cannot reach; this pins the app's
+    /// half, that a genuine release never acts on a menu.
+    #[test]
+    fn a_key_release_does_nothing_on_a_menu() {
+        let mut app = title_app();
+        send(&mut app, KeyCode::Down);
+        send(&mut app, KeyCode::Enter);
+        assert!(matches!(app.state, AppState::Options(_)));
+
+        let now = Instant::now();
+        app.handle_event(press(KeyCode::Esc), now);
+        app.handle_event(release(KeyCode::Esc), now);
+        assert!(matches!(app.state, AppState::Title(_)));
+        assert!(!app.should_quit);
+    }
+
+    /// The other half: Esc paused only while it was held, because its release
+    /// (and each repeat) arrived as another press. Only the terminal setup can
+    /// cause that; this pins that the app itself toggles on presses alone.
+    #[test]
+    fn pause_is_a_toggle_not_a_hold() {
+        let mut app = App::headless(Mode::Nes, 0, TimingMode::Precise);
+        let now = Instant::now();
+        app.handle_event(press(KeyCode::Esc), now);
+        app.tick(now);
+        assert!(matches!(app.state, AppState::Paused(_)));
+
+        app.handle_event(key_event(KeyCode::Esc, KeyEventKind::Repeat), now);
+        app.handle_event(release(KeyCode::Esc), now);
+        app.tick(now);
+        assert!(matches!(app.state, AppState::Paused(_)), "still paused");
+
+        app.handle_event(press(KeyCode::Esc), now);
+        assert!(
+            matches!(app.state, AppState::Playing),
+            "a second press resumes"
+        );
     }
 
     fn render_to_string(app: &App, width: u16, height: u16) -> String {
@@ -1114,6 +1197,46 @@ mod tests {
     }
 
     /// The background runs on the title screen too — that is what attract mode is.
+    fn render_buffer(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    #[test]
+    fn everything_drawn_is_bold() {
+        // "Quit" is an unselected menu item, which is not bold of its own accord.
+        let quit_is_bold = |app: &App| {
+            let buf = render_buffer(app, 80, 30);
+            buf.content
+                .iter()
+                .find(|cell| cell.symbol() == "Q")
+                .expect("the menu is drawn")
+                .modifier
+                .contains(Modifier::BOLD)
+        };
+        assert!(quit_is_bold(&title_app()));
+    }
+
+    #[test]
+    fn background_dimming_can_be_turned_off() {
+        let mut app = title_app();
+        app.config.background = BackgroundKind::Scene;
+        app.config.scene = SceneChoice::Mountains;
+        app.apply_config();
+        let dimmed = |app: &App| {
+            render_buffer(app, 80, 30)
+                .content
+                .iter()
+                .any(|cell| cell.symbol() == "~" && cell.modifier.contains(Modifier::DIM))
+        };
+        assert!(dimmed(&app), "dimmed by default");
+
+        app.config.dim_background = false;
+        assert!(!dimmed(&app));
+    }
+
     #[test]
     fn a_background_draws_behind_the_title_screen() {
         let mut app = title_app();
@@ -1215,7 +1338,7 @@ mod tests {
             }
         }
 
-        send(&mut app, KeyCode::Char(' '));
+        send(&mut app, KeyCode::Char('w'));
         assert_eq!(
             app.history.last_clear,
             ClearKind::Single,
@@ -1280,7 +1403,7 @@ mod tests {
         for border in BorderStyle::ALL {
             let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
             app.config.border = border;
-            send(&mut app, KeyCode::Char(' '));
+            send(&mut app, KeyCode::Char('w'));
             let score = app.game.as_ref().unwrap().score();
 
             let rendered = render_to_string(&app, layout::MIN_WIDTH, layout::MIN_HEIGHT);
@@ -1337,7 +1460,7 @@ mod tests {
             check(&app, 80, 30, &format!("title, {kind:?}"));
 
             app.state = AppState::Options(OptionsMenu {
-                rebinding: Some(Action::MoveLeft),
+                rebinding: Some(crate::menu::Rebind::Game(Action::MoveLeft)),
                 ..Default::default()
             });
             check(&app, 80, 30, &format!("options, {kind:?}"));

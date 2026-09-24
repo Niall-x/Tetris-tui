@@ -49,10 +49,18 @@ pub fn entry_delay_frames(lock_row: u32, visible_height: u32) -> u32 {
     (10 + band * 2).min(18)
 }
 
-/// Frames spent on the line-clear flash before entry delay begins. Reported as
-/// 17–20 depending on the frame a piece locked on; we use a flat 18 pending
-/// confirmation (brief.md §14).
-pub const LINE_CLEAR_DELAY_FRAMES: u32 = 18;
+/// The line-clear animation erases each full row from the centre outward, one
+/// column either side per step: columns 4 and 5, then 3 and 6, out to 0 and 9.
+///
+/// A step only happens on a frame where the global frame counter is a multiple of
+/// four, so the first one lands 1–4 frames after the lock and the whole clear
+/// takes 17–20 frames, depending on where in the cycle the piece locked.
+///
+/// Source: `updateLineClearingAnimation` and its `leftColumns`/`rightColumns`
+/// tables in the Tetris (NES) disassembly (github.com/CelestialAmber/
+/// TetrisNESDisasm); the 17–20 total matches tetris.wiki "Tetris (NES)".
+pub const LINE_CLEAR_STEPS: u32 = 5;
+pub const LINE_CLEAR_STEP_FRAMES: u32 = 4;
 
 #[cfg(test)]
 mod tests {

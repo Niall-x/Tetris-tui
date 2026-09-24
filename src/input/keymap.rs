@@ -1,10 +1,21 @@
-//! Key bindings. Rebinding is a matter of editing this map, which is why nothing
+//! Key bindings. Rebinding is a matter of editing these maps, which is why nothing
 //! downstream matches on key codes directly.
+//!
+//! There are two: `Keymap` for play and `MenuKeymap` for the menus. They are
+//! separate namespaces, so one key can rotate a piece and confirm a menu choice.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 
-use super::action::Action;
+use super::action::{Action, MenuInput};
+
+/// Letters are bound in lower case, so Caps Lock or Shift must not unbind them.
+fn normalize(code: KeyCode) -> KeyCode {
+    match code {
+        KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
+        other => other,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Keymap {
@@ -19,20 +30,17 @@ impl Keymap {
     }
 
     pub fn bind(&mut self, code: KeyCode, modifiers: KeyModifiers, action: Action) {
-        self.bindings.insert((code, modifiers), action);
+        self.bindings.insert((normalize(code), modifiers), action);
     }
 
     pub fn action_for(&self, event: &KeyEvent) -> Option<Action> {
+        let code = normalize(event.code);
         self.bindings
-            .get(&(event.code, event.modifiers))
+            .get(&(code, event.modifiers))
             .copied()
             // Shift is reported alongside uppercase letters on some terminals;
             // fall back to an unmodified lookup rather than losing the binding.
-            .or_else(|| {
-                self.bindings
-                    .get(&(event.code, KeyModifiers::NONE))
-                    .copied()
-            })
+            .or_else(|| self.bindings.get(&(code, KeyModifiers::NONE)).copied())
     }
 
     /// Every key currently bound to `action`, for display in a rebinding UI.
@@ -50,26 +58,103 @@ impl Default for Keymap {
         let mut map = Self::empty();
         let none = KeyModifiers::NONE;
 
+        // WASD, with the arrows mirroring it for the other hand.
+        map.bind(KeyCode::Char('a'), none, Action::MoveLeft);
         map.bind(KeyCode::Left, none, Action::MoveLeft);
-        map.bind(KeyCode::Char('h'), none, Action::MoveLeft);
+        map.bind(KeyCode::Char('d'), none, Action::MoveRight);
         map.bind(KeyCode::Right, none, Action::MoveRight);
-        map.bind(KeyCode::Char('l'), none, Action::MoveRight);
+        map.bind(KeyCode::Char('s'), none, Action::SoftDrop);
         map.bind(KeyCode::Down, none, Action::SoftDrop);
-        map.bind(KeyCode::Char('j'), none, Action::SoftDrop);
+        map.bind(KeyCode::Char('w'), none, Action::HardDrop);
+        map.bind(KeyCode::Up, none, Action::HardDrop);
 
-        // NES pads A clockwise, B counter-clockwise; X/Z mirrors that on a keyboard.
-        map.bind(KeyCode::Char('x'), none, Action::RotateCw);
-        map.bind(KeyCode::Up, none, Action::RotateCw);
-        map.bind(KeyCode::Char('z'), none, Action::RotateCcw);
+        // The NES pad's B and A, in pad order under the right hand.
+        map.bind(KeyCode::Char('j'), none, Action::RotateCcw);
+        map.bind(KeyCode::Char('k'), none, Action::RotateCw);
 
-        map.bind(KeyCode::Char(' '), none, Action::HardDrop);
-        map.bind(KeyCode::Char('c'), none, Action::Hold);
-        map.bind(KeyCode::Tab, none, Action::Hold);
+        map.bind(KeyCode::Char(' '), none, Action::Hold);
 
         map.bind(KeyCode::Char('p'), none, Action::Pause);
         map.bind(KeyCode::Esc, none, Action::Pause);
         map.bind(KeyCode::Char('q'), none, Action::Quit);
 
+        map
+    }
+}
+
+/// Keys that drive every menu whatever the bindings say. They are the way back
+/// out of a menu keymap that has been rebound into a corner, so they cannot be
+/// rebound themselves.
+pub const FIXED_MENU_KEYS: [(KeyCode, MenuInput); 6] = [
+    (KeyCode::Up, MenuInput::Up),
+    (KeyCode::Down, MenuInput::Down),
+    (KeyCode::Left, MenuInput::Left),
+    (KeyCode::Right, MenuInput::Right),
+    (KeyCode::Enter, MenuInput::Confirm),
+    (KeyCode::Esc, MenuInput::Back),
+];
+
+#[derive(Debug, Clone)]
+pub struct MenuKeymap {
+    bindings: HashMap<KeyCode, MenuInput>,
+}
+
+impl MenuKeymap {
+    pub fn empty() -> Self {
+        Self {
+            bindings: HashMap::new(),
+        }
+    }
+
+    pub fn bind(&mut self, code: KeyCode, input: MenuInput) {
+        self.bindings.insert(normalize(code), input);
+    }
+
+    pub fn is_fixed(code: KeyCode) -> bool {
+        FIXED_MENU_KEYS.iter().any(|&(fixed, _)| fixed == code)
+    }
+
+    /// Menu navigation from a key event, fixed keys first.
+    ///
+    /// Chords are deliberately not navigation: in raw mode a terminal delivers
+    /// Ctrl-D as `Char('d')` with a modifier, and taking that for "right" would let
+    /// stray control input walk the menu. Shift is allowed through because
+    /// terminals report it alongside ordinary capitals.
+    pub fn input_for(&self, event: &KeyEvent) -> Option<MenuInput> {
+        if event
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
+            return None;
+        }
+        let code = normalize(event.code);
+        FIXED_MENU_KEYS
+            .iter()
+            .find(|&&(fixed, _)| fixed == code)
+            .map(|&(_, input)| input)
+            .or_else(|| self.bindings.get(&code).copied())
+    }
+
+    /// The rebindable keys for `input`; the fixed ones are not included.
+    pub fn keys_for(&self, input: MenuInput) -> Vec<KeyCode> {
+        self.bindings
+            .iter()
+            .filter(|(_, &i)| i == input)
+            .map(|(&code, _)| code)
+            .collect()
+    }
+}
+
+impl Default for MenuKeymap {
+    fn default() -> Self {
+        let mut map = Self::empty();
+        map.bind(KeyCode::Char('w'), MenuInput::Up);
+        map.bind(KeyCode::Char('s'), MenuInput::Down);
+        map.bind(KeyCode::Char('a'), MenuInput::Left);
+        map.bind(KeyCode::Char('d'), MenuInput::Right);
+        // The rotate keys double as confirm and back.
+        map.bind(KeyCode::Char('j'), MenuInput::Confirm);
+        map.bind(KeyCode::Char('k'), MenuInput::Back);
         map
     }
 }
@@ -110,21 +195,83 @@ mod tests {
     }
 
     #[test]
-    fn resolves_arrows_and_vim_keys_to_the_same_actions() {
+    fn the_defaults_are_wasd_with_the_arrows_mirroring_it() {
         let map = Keymap::default();
-        assert_eq!(map.action_for(&key(KeyCode::Left)), Some(Action::MoveLeft));
+        for (letter, arrow, action) in [
+            ('a', KeyCode::Left, Action::MoveLeft),
+            ('d', KeyCode::Right, Action::MoveRight),
+            ('s', KeyCode::Down, Action::SoftDrop),
+            ('w', KeyCode::Up, Action::HardDrop),
+        ] {
+            assert_eq!(map.action_for(&key(KeyCode::Char(letter))), Some(action));
+            assert_eq!(map.action_for(&key(arrow)), Some(action));
+        }
         assert_eq!(
-            map.action_for(&key(KeyCode::Char('h'))),
-            Some(Action::MoveLeft)
-        );
-        assert_eq!(
-            map.action_for(&key(KeyCode::Char('x'))),
-            Some(Action::RotateCw)
-        );
-        assert_eq!(
-            map.action_for(&key(KeyCode::Char('z'))),
+            map.action_for(&key(KeyCode::Char('j'))),
             Some(Action::RotateCcw)
         );
+        assert_eq!(
+            map.action_for(&key(KeyCode::Char('k'))),
+            Some(Action::RotateCw)
+        );
+        assert_eq!(map.action_for(&key(KeyCode::Char(' '))), Some(Action::Hold));
+    }
+
+    /// Caps Lock, or a terminal reporting Shift with the capital, must not unbind
+    /// a letter.
+    #[test]
+    fn capitals_resolve_to_the_lower_case_binding() {
+        let map = Keymap::default();
+        let shifted = KeyEvent {
+            modifiers: KeyModifiers::SHIFT,
+            ..key(KeyCode::Char('A'))
+        };
+        assert_eq!(map.action_for(&shifted), Some(Action::MoveLeft));
+        assert_eq!(
+            MenuKeymap::default().input_for(&key(KeyCode::Char('W'))),
+            Some(MenuInput::Up)
+        );
+    }
+
+    #[test]
+    fn the_menu_defaults_are_wasd_with_the_rotate_keys_to_confirm_and_go_back() {
+        let menu = MenuKeymap::default();
+        for (code, input) in [
+            (KeyCode::Char('w'), MenuInput::Up),
+            (KeyCode::Char('a'), MenuInput::Left),
+            (KeyCode::Char('s'), MenuInput::Down),
+            (KeyCode::Char('d'), MenuInput::Right),
+            (KeyCode::Char('j'), MenuInput::Confirm),
+            (KeyCode::Char('k'), MenuInput::Back),
+        ] {
+            assert_eq!(menu.input_for(&key(code)), Some(input), "{code:?}");
+        }
+    }
+
+    /// The fixed keys are the way out of a menu keymap bound into a corner, so
+    /// they work even from an empty one.
+    #[test]
+    fn the_fixed_menu_keys_work_whatever_is_bound() {
+        let menu = MenuKeymap::empty();
+        for (code, input) in FIXED_MENU_KEYS {
+            assert_eq!(menu.input_for(&key(code)), Some(input));
+            assert!(MenuKeymap::is_fixed(code));
+        }
+        assert_eq!(menu.input_for(&key(KeyCode::Char('w'))), None);
+    }
+
+    /// Ctrl-D reaches a raw-mode terminal as `Char('d')`, which is also the "right"
+    /// key: without the modifier check it would walk the menu on its own.
+    #[test]
+    fn control_chords_are_not_menu_navigation() {
+        let menu = MenuKeymap::default();
+        for code in [KeyCode::Char('d'), KeyCode::Char('j'), KeyCode::Down] {
+            let chord = KeyEvent {
+                modifiers: KeyModifiers::CONTROL,
+                ..key(code)
+            };
+            assert_eq!(menu.input_for(&chord), None, "{code:?}");
+        }
     }
 
     #[test]
@@ -136,9 +283,9 @@ mod tests {
     #[test]
     fn rebinding_replaces_the_previous_action_for_that_key() {
         let mut map = Keymap::default();
-        map.bind(KeyCode::Char('h'), KeyModifiers::NONE, Action::RotateCcw);
+        map.bind(KeyCode::Char('a'), KeyModifiers::NONE, Action::RotateCcw);
         assert_eq!(
-            map.action_for(&key(KeyCode::Char('h'))),
+            map.action_for(&key(KeyCode::Char('a'))),
             Some(Action::RotateCcw)
         );
         // The other binding for MoveLeft survives.

@@ -96,7 +96,6 @@ pub enum Skin {
     #[default]
     SolidBlock,
     Shaded,
-    Outlined,
     /// Plain ASCII, for terminals with poor Unicode support.
     AsciiBracket,
     /// The piece's own letter, which identifies pieces without relying on colour
@@ -105,10 +104,9 @@ pub enum Skin {
 }
 
 impl Skin {
-    pub const ALL: [Skin; 5] = [
+    pub const ALL: [Skin; 4] = [
         Skin::SolidBlock,
         Skin::Shaded,
-        Skin::Outlined,
         Skin::AsciiBracket,
         Skin::Letter,
     ];
@@ -117,18 +115,12 @@ impl Skin {
         match self {
             Skin::SolidBlock => "Solid",
             Skin::Shaded => "Shaded",
-            Skin::Outlined => "Outlined",
             Skin::AsciiBracket => "ASCII",
             Skin::Letter => "Letters",
         }
     }
 
     /// The two glyphs making up one cell, left column first.
-    ///
-    /// `Outlined` fills the middle of each cell and leaves its edges clear, so the
-    /// individual cells of a piece stay visible instead of merging into one mass.
-    /// It is a per-cell outline rather than a per-piece one, which would need
-    /// neighbour awareness the cell painter does not have.
     pub fn cell(self, kind: PieceKind, role: CellRole) -> [&'static str; 2] {
         match (self, role) {
             (Skin::SolidBlock, CellRole::Filled) => ["█", "█"],
@@ -136,9 +128,6 @@ impl Skin {
 
             (Skin::Shaded, CellRole::Filled) => ["▓", "▓"],
             (Skin::Shaded, CellRole::Ghost) => ["░", "░"],
-
-            (Skin::Outlined, CellRole::Filled) => ["▐", "▌"],
-            (Skin::Outlined, CellRole::Ghost) => ["▕", "▏"],
 
             (Skin::AsciiBracket, CellRole::Filled) => ["[", "]"],
             (Skin::AsciiBracket, CellRole::Ghost) => ["(", ")"],
@@ -270,10 +259,17 @@ impl Visuals {
         self.skin == Skin::AsciiBracket || self.border == BorderStyle::Ascii
     }
 
+    /// Whether the menus and HUD keep to ASCII. That follows the border alone,
+    /// since the border is the setting that already styles the menus; the skin
+    /// is about the pieces, and changing it must not rewrite the interface.
+    pub fn ascii_interface(&self) -> bool {
+        self.border == BorderStyle::Ascii
+    }
+
     /// Interface text as it should be drawn: unchanged normally, and with its
-    /// arrows and punctuation spelled out in ASCII when `ascii_only` is set.
+    /// arrows and punctuation spelled out in ASCII when `ascii_interface` is set.
     pub fn text<'a>(&self, text: &'a str) -> Cow<'a, str> {
-        if !self.ascii_only() || text.is_ascii() {
+        if !self.ascii_interface() || text.is_ascii() {
             return Cow::Borrowed(text);
         }
         // Pairs first, so a hint's "↑↓" reads as one phrase, not two words.
@@ -332,6 +328,23 @@ mod tests {
 
     /// The ASCII skin exists for terminals that cannot render Unicode; a stray
     /// multi-byte glyph in it would defeat the point.
+    /// The skin is about the pieces: picking the ASCII one must not rewrite the
+    /// menus. Only the ASCII border does that.
+    #[test]
+    fn only_the_ascii_border_spells_out_menu_arrows() {
+        let ascii_skin = Visuals {
+            skin: Skin::AsciiBracket,
+            ..Default::default()
+        };
+        assert_eq!(ascii_skin.text("↑ / ↓"), "↑ / ↓");
+
+        let ascii_border = Visuals {
+            border: BorderStyle::Ascii,
+            ..Default::default()
+        };
+        assert_eq!(ascii_border.text("↑ / ↓"), "Up / Down");
+    }
+
     #[test]
     fn the_ascii_skin_is_actually_ascii() {
         for kind in PieceKind::ALL {
