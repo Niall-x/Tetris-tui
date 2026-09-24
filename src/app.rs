@@ -22,21 +22,22 @@ use crossterm::terminal::{
 };
 use crossterm::{execute, ExecutableCommand};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Margin, Rect, Size};
 use ratatui::style::{Color, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{Block, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 
 use crate::background::scenes::SceneChoice;
-use crate::background::{Background, BackgroundKind, Canvas, ClearKind, PerformanceSignal};
+use crate::background::{Background, BackgroundKind, Canvas, PerformanceSignal, PlacementHistory};
 use crate::config::Config;
 use crate::game::{Game, Input, Mode};
 use crate::input::action::Action;
 use crate::input::held::{HeldKeys, TimingMode};
 use crate::input::keymap::Keymap;
 use crate::menu::{
-    menu_input, GameOverItem, GameOverMenu, OptionsMenu, OptionsOutcome, PauseItem, PauseMenu,
-    ScoresView, TitleItem, TitleMenu,
+    menu_input, GameOverItem, GameOverMenu, MenuInput, OptionsMenu, OptionsOutcome, PauseItem,
+    PauseMenu, ScoresView, TitleItem, TitleMenu,
 };
 use crate::scores::{today, Entry, Scores};
 use crate::ui::{board_view, hud, layout, menu as menu_ui};
@@ -87,8 +88,11 @@ pub struct App {
     /// What the background was built from, so it is rebuilt only when the setting
     /// actually changes rather than every frame.
     background_source: (BackgroundKind, SceneChoice),
-    /// The most recent placement's clear, which reactive backgrounds read.
-    last_clear: ClearKind,
+    /// What this run's placements have done, which reactive backgrounds read.
+    history: PlacementHistory,
+    /// The terminal's size, which animated backgrounds are sized from as they
+    /// tick. Kept current from resize events.
+    size: Size,
 }
 
 impl App {
@@ -106,7 +110,9 @@ impl App {
             persist: true,
             background: config.background.create(config.scene),
             background_source: (config.background, config.scene),
-            last_clear: ClearKind::None,
+            history: PlacementHistory::default(),
+            // A stand-in until the real terminal reports in; tests keep it.
+            size: Size::new(80, 24),
             scores,
             config,
         }
@@ -139,6 +145,8 @@ impl App {
         // A key still down from the menu must not shift the first piece.
         self.held.clear();
         self.pressed.clear();
+        // Nor should the previous run's last clear still be celebrated.
+        self.history = PlacementHistory::default();
     }
 
     /// Remember how this session was set up, so a bare launch resumes it.
@@ -179,6 +187,10 @@ impl App {
     // -- input ------------------------------------------------------------
 
     fn handle_event(&mut self, event: Event, now: Instant) {
+        if let Event::Resize(width, height) = event {
+            self.size = Size::new(width, height);
+            return;
+        }
         let Event::Key(key) = event else { return };
 
         // Raw mode swallows the terminal's own interrupt, so Ctrl-C is handled
@@ -194,8 +206,22 @@ impl App {
 
         if matches!(self.state, AppState::Playing) {
             self.handle_play_key(key, now);
-        } else if key.kind == KeyEventKind::Press {
-            self.handle_menu_key(key);
+            return;
+        }
+
+        match key.kind {
+            KeyEventKind::Press => self.handle_menu_key(key),
+            // Autorepeat walks a menu the way it scrolls anything else, but only
+            // for movement: a held Enter or Esc must not fire twice.
+            KeyEventKind::Repeat if is_movement(&key) => self.handle_menu_key(key),
+            KeyEventKind::Repeat => {}
+            // A key let go while a menu is up still has to register as released,
+            // or it would come back held when play resumes.
+            KeyEventKind::Release => {
+                if let Some(action) = self.keymap.action_for(&key) {
+                    self.held.release(action);
+                }
+            }
         }
     }
 
@@ -385,7 +411,7 @@ impl App {
                     // Remembered rather than consumed here: a background reads it
                     // when it next draws, which is after this tick.
                     if events.piece_locked {
-                        self.last_clear = ClearKind::from_lines(events.lines_cleared);
+                        self.history.record(events.lines_cleared, events.tspin);
                     }
                 }
                 if self.game.as_ref().is_some_and(Game::is_over) {
@@ -396,10 +422,20 @@ impl App {
 
         // The background animates on every screen, so the title screen's attract
         // mode runs at the same rate as gameplay.
-        self.background.tick(TICK);
+        let signal = self.signal();
+        self.background.tick(TICK, self.size, &signal);
 
         self.pressed.clear();
         self.held.expire(now);
+    }
+
+    /// How the run is going, for backgrounds that react to it. A quiet default
+    /// when there is no run, as on the title screen.
+    fn signal(&self) -> PerformanceSignal {
+        match &self.game {
+            Some(game) => PerformanceSignal::of(game, &self.history),
+            None => PerformanceSignal::default(),
+        }
     }
 
     fn enter_game_over(&mut self) {
@@ -433,13 +469,16 @@ impl App {
             _ => None,
         };
         let overlay_area = board_area.unwrap_or(area);
+        let visuals = self.config.visuals();
 
         match &self.state {
             AppState::Playing => {}
-            AppState::Title(menu) => menu_ui::render_title(frame, area, menu, self.config.mode),
+            AppState::Title(menu) => {
+                menu_ui::render_title(frame, area, menu, self.config.mode, &visuals)
+            }
             AppState::Options(menu) => menu_ui::render_options(frame, area, menu, &self.config),
             AppState::HighScores(view) => {
-                menu_ui::render_scores(frame, area, view, &self.scores, self.config.border)
+                menu_ui::render_scores(frame, area, view, &self.scores, &visuals)
             }
             AppState::Paused(menu) => {
                 menu_ui::render_pause(frame, overlay_area, menu, self.config.border)
@@ -467,7 +506,12 @@ impl App {
     /// underneath would show through their blank space.
     fn draw_background(&self, frame: &mut Frame, area: Rect, plan: Option<&layout::Layout>) {
         let mut reserved: Vec<Rect> = Vec::new();
-        if let Some(plan) = plan.filter(|plan| plan.tier != layout::Tier::TooSmall) {
+        if let Some(plan) = plan {
+            // The resize prompt is all there is room for; animation around it
+            // would only make it harder to read.
+            if plan.tier == layout::Tier::TooSmall {
+                return;
+            }
             reserved.push(plan.board);
             reserved.extend(
                 [plan.stats, plan.next, plan.piece_counts]
@@ -476,10 +520,7 @@ impl App {
             );
         }
 
-        let signal = match &self.game {
-            Some(game) => PerformanceSignal::of(game, self.last_clear),
-            None => PerformanceSignal::default(),
-        };
+        let signal = self.signal();
         let visuals = self.config.visuals();
         let mut canvas = Canvas::new(frame.buffer_mut(), area, &reserved);
         self.background.render(&mut canvas, &visuals, &signal);
@@ -504,12 +545,26 @@ impl App {
         }
 
         let visuals = self.config.visuals();
-        let block = visuals.border.apply(
+        let mut block = visuals.border.apply(
             Block::default()
                 .title(format!(" {} ", game.mode().label()))
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
-        let interior = block.inner(plan.board);
+        // With no room for the stats panel, the essentials ride along the bottom
+        // edge instead, so a narrow terminal still shows how the run is going.
+        if plan.stats.is_none() {
+            let line = format!(" {} · L{} · {}L ", game.score(), game.level(), game.lines());
+            block = block.title_bottom(
+                Line::from(visuals.text(&line).into_owned())
+                    .style(Style::default().fg(Color::White))
+                    .centered(),
+            );
+        }
+        // The layout keeps a one-cell frame round the field whether or not a
+        // border is drawn in it, so the field is taken from inside that frame
+        // rather than from the block — which, with no border, would start the
+        // field against the frame's left edge, a column off centre.
+        let interior = plan.board.inner(Margin::new(1, 1));
         frame.render_widget(block, plan.board);
 
         board_view::render(frame.buffer_mut(), interior, game, &visuals);
@@ -526,6 +581,15 @@ impl App {
 
         Some(interior)
     }
+}
+
+/// Whether a key moves a menu cursor or value, as opposed to confirming or
+/// leaving — the distinction autorepeat needs.
+fn is_movement(key: &KeyEvent) -> bool {
+    matches!(
+        menu_input(key),
+        Some(MenuInput::Up | MenuInput::Down | MenuInput::Left | MenuInput::Right)
+    )
 }
 
 pub fn run(mode: Option<Mode>, start_level: Option<u32>) -> io::Result<()> {
@@ -554,6 +618,7 @@ pub fn run(mode: Option<Mode>, start_level: Option<u32>) -> io::Result<()> {
     }
 
     let mut terminal = setup(precise)?;
+    app.size = terminal.size()?;
     let result = event_loop(&mut terminal, &mut app);
     app.remember_session();
     restore(precise)?;
@@ -620,7 +685,8 @@ fn restore(precise: bool) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::menu::{MenuInput, OptionRow};
+    use crate::background::ClearKind;
+    use crate::menu::OptionRow;
     use crossterm::event::KeyEventState;
 
     fn key_event(code: KeyCode, kind: KeyEventKind) -> Event {
@@ -1127,7 +1193,7 @@ mod tests {
     #[test]
     fn the_last_clear_is_recorded_for_reactive_backgrounds() {
         let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
-        assert_eq!(app.last_clear, ClearKind::None);
+        assert_eq!(app.history, PlacementHistory::default());
 
         // Fill the bottom row everywhere except under the current piece, so one
         // hard drop completes it whatever piece the bag dealt.
@@ -1151,10 +1217,86 @@ mod tests {
 
         send(&mut app, KeyCode::Char(' '));
         assert_eq!(
-            app.last_clear,
+            app.history.last_clear,
             ClearKind::Single,
             "a filled row should have registered as a single"
         );
+        assert_eq!(app.history.placements, 1, "and counted as a placement");
+        assert!(!app.history.last_tspin);
+    }
+
+    /// Menus ignore everything but presses, so a release that happens while one is
+    /// up has to be routed to the held-key state separately — otherwise a direction
+    /// let go during the pause comes back held, and the piece slides on its own.
+    #[test]
+    fn a_key_released_while_paused_is_not_held_on_resume() {
+        let mut app = App::headless(Mode::Nes, 0, TimingMode::Precise);
+        let now = Instant::now();
+        app.handle_event(press(KeyCode::Left), now);
+        app.tick(now);
+        send(&mut app, KeyCode::Char('p'));
+        assert!(matches!(app.state, AppState::Paused(_)));
+
+        app.handle_event(release(KeyCode::Left), now);
+        // The pause key resumes directly, without the menu's own clear.
+        send(&mut app, KeyCode::Char('p'));
+        assert!(matches!(app.state, AppState::Playing));
+        assert!(!app.held.is_held(Action::MoveLeft, now));
+    }
+
+    /// Holding an arrow scrolls a menu, but a held Enter must not confirm twice.
+    #[test]
+    fn menu_autorepeat_moves_the_cursor_but_never_confirms() {
+        let mut app = title_app();
+        let now = Instant::now();
+        app.handle_event(key_event(KeyCode::Down, KeyEventKind::Repeat), now);
+        let AppState::Title(menu) = &app.state else {
+            panic!("still on the title screen");
+        };
+        assert_eq!(menu.selected, 1);
+
+        app.handle_event(key_event(KeyCode::Enter, KeyEventKind::Repeat), now);
+        assert!(
+            matches!(app.state, AppState::Title(_)),
+            "a repeated Enter must not open Options"
+        );
+    }
+
+    #[test]
+    fn a_new_run_forgets_the_last_runs_final_clear() {
+        let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
+        app.history.record(4, true);
+        app.start_run();
+        assert_eq!(app.history, PlacementHistory::default());
+    }
+
+    /// The narrowest layout has no stats panel, so the score has to go somewhere
+    /// else — and putting it there must not cost the board a row, with or without
+    /// a drawn border.
+    #[test]
+    fn a_compact_layout_still_shows_the_score_under_every_border() {
+        use crate::ui::style::BorderStyle;
+
+        for border in BorderStyle::ALL {
+            let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
+            app.config.border = border;
+            send(&mut app, KeyCode::Char(' '));
+            let score = app.game.as_ref().unwrap().score();
+
+            let rendered = render_to_string(&app, layout::MIN_WIDTH, layout::MIN_HEIGHT);
+            println!("=== {border:?} ===\n{rendered}");
+            assert!(
+                // The ASCII border spells the separator plainly.
+                rendered.contains(&format!("{score} · L1"))
+                    || rendered.contains(&format!("{score} | L1")),
+                "{border:?}: no score line"
+            );
+            let dotted_rows = rendered.lines().filter(|row| row.contains('·')).count();
+            assert!(
+                dotted_rows >= 20,
+                "{border:?}: the board lost rows ({dotted_rows} drawn)"
+            );
+        }
     }
 
     #[test]
@@ -1164,5 +1306,174 @@ mod tests {
         println!("{rendered}");
         assert!(rendered.contains("Play"));
         assert!(!rendered.contains("SCORE"), "no HUD before a run starts");
+    }
+
+    /// The ASCII options exist for terminals that cannot be trusted with
+    /// Unicode, so with them picked nothing on any screen — menus, board, HUD,
+    /// overlays or any background — may draw anything else.
+    #[test]
+    fn with_the_ascii_options_every_screen_is_pure_ascii() {
+        use crate::ui::style::{BorderStyle, Skin};
+
+        let set_up = |app: &mut App, kind: BackgroundKind| {
+            app.config.skin = Skin::AsciiBracket;
+            app.config.border = BorderStyle::Ascii;
+            app.config.background = kind;
+            app.apply_config();
+            for _ in 0..240 {
+                app.tick(Instant::now());
+            }
+        };
+        let check = |app: &App, width: u16, height: u16, screen: &str| {
+            let rendered = render_to_string(app, width, height);
+            if let Some(ch) = rendered.chars().find(|ch| !ch.is_ascii()) {
+                panic!("{screen}: {ch:?} drawn\n{rendered}");
+            }
+        };
+
+        for kind in BackgroundKind::ALL {
+            let mut app = title_app();
+            set_up(&mut app, kind);
+            check(&app, 80, 30, &format!("title, {kind:?}"));
+
+            app.state = AppState::Options(OptionsMenu {
+                rebinding: Some(Action::MoveLeft),
+                ..Default::default()
+            });
+            check(&app, 80, 30, &format!("options, {kind:?}"));
+
+            app.scores.insert(
+                Mode::Nes,
+                Entry {
+                    name: "ada".into(),
+                    score: 100,
+                    lines: 1,
+                    level: 0,
+                    date: today(),
+                },
+            );
+            app.state = AppState::HighScores(ScoresView::new(Mode::Nes));
+            check(&app, 80, 30, &format!("scores, {kind:?}"));
+
+            for mode in [Mode::Nes, Mode::Modern] {
+                let mut app = App::headless(mode, 1, TimingMode::Precise);
+                set_up(&mut app, kind);
+                // Full, medium and compact layouts.
+                for (width, height) in [(100, 30), (45, 26), (22, 22)] {
+                    app.size = Size::new(width, height);
+                    check(
+                        &app,
+                        width,
+                        height,
+                        &format!("{mode:?} {width}x{height}, {kind:?}"),
+                    );
+                }
+                app.state = AppState::Paused(PauseMenu::default());
+                check(&app, 100, 30, &format!("pause, {kind:?}"));
+                app.state = AppState::GameOver(GameOverMenu::new(true, "x"));
+                check(&app, 100, 30, &format!("game over, {kind:?}"));
+            }
+        }
+    }
+
+    /// Taking the border away must not move the field: the frame it sat in is
+    /// still reserved, so the field stays centred in it.
+    #[test]
+    fn the_field_stays_put_whatever_the_border() {
+        use crate::ui::style::BorderStyle;
+
+        let first_dot = |border: BorderStyle| {
+            let mut app = App::headless(Mode::Nes, 0, TimingMode::Precise);
+            app.config.border = border;
+            let rendered = render_to_string(&app, 80, 26);
+            // The bottom row of the field is empty dots from edge to edge.
+            let row = rendered
+                .lines()
+                .rev()
+                .find(|line| line.contains('·'))
+                .unwrap()
+                .to_string();
+            row.chars().position(|c| c == '·').unwrap()
+        };
+        assert_eq!(first_dot(BorderStyle::None), first_dot(BorderStyle::Single));
+    }
+
+    /// Animated backgrounds size themselves from what the app hands them, so a
+    /// resize has to reach it.
+    #[test]
+    fn a_resize_is_passed_on_to_the_background() {
+        let mut app = title_app();
+        app.handle_event(Event::Resize(132, 43), Instant::now());
+        assert_eq!(app.size, Size::new(132, 43));
+    }
+
+    /// Attract mode runs a busy background right up to the title menu; the menu
+    /// has to stay readable over it.
+    #[test]
+    fn the_title_menu_stays_clear_over_an_animated_background() {
+        let mut app = title_app();
+        app.config.background = BackgroundKind::MatrixRain;
+        app.apply_config();
+        app.size = Size::new(80, 30);
+        for _ in 0..600 {
+            app.tick(Instant::now());
+        }
+
+        let rendered = render_to_string(&app, 80, 30);
+        println!("{rendered}");
+        let menu_row = rendered
+            .lines()
+            .find(|row| row.contains("Options"))
+            .expect("the menu is drawn");
+        let label = menu_row.find("Options").unwrap();
+        // The row's padding either side of the label is clear of rain.
+        let around = &menu_row[label.saturating_sub(4)..label + "Options".len() + 4];
+        assert_eq!(around.trim(), "Options", "rain in the menu: {around:?}");
+    }
+
+    /// Each animated background behind a real game frame, dumped for inspection,
+    /// with the HUD checked to have survived it.
+    #[test]
+    fn each_animated_background_runs_behind_a_game() {
+        for kind in [
+            BackgroundKind::MatrixRain,
+            BackgroundKind::Pipes,
+            BackgroundKind::Nyancat,
+            BackgroundKind::Bonsai,
+            BackgroundKind::Aquarium,
+            BackgroundKind::Cowsay,
+            BackgroundKind::Locomotive,
+        ] {
+            let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
+            app.config.background = kind;
+            app.apply_config();
+            app.size = Size::new(110, 30);
+            // Long enough for the cat to be mid-crossing and the tree grown.
+            for _ in 0..60 * 5 {
+                app.tick(Instant::now());
+            }
+
+            let rendered = render_to_string(&app, 110, 30);
+            println!("=== {} ===\n{rendered}", kind.label());
+            assert!(rendered.contains("SCORE"), "{kind:?} hid the stats");
+            assert!(rendered.contains("HOLD"), "{kind:?} hid the hold panel");
+        }
+    }
+
+    /// The resize prompt is the one thing on screen when the terminal is too
+    /// small; a background animating round it would only obscure it.
+    #[test]
+    fn no_background_is_drawn_behind_the_resize_prompt() {
+        let mut app = App::headless(Mode::Nes, 0, TimingMode::Precise);
+        app.config.background = BackgroundKind::Pipes;
+        app.apply_config();
+        app.size = Size::new(20, 10);
+        for _ in 0..300 {
+            app.tick(Instant::now());
+        }
+        let rendered = render_to_string(&app, 20, 10);
+        println!("{rendered}");
+        assert!(rendered.contains("too small"));
+        assert!(!rendered.contains(['─', '│', '┌', '┐', '└', '┘']));
     }
 }

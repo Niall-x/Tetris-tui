@@ -9,6 +9,8 @@
 //! drawn two columns per cell — a skin that returned one or three would shear the
 //! whole playfield, so the pair is the unit the API deals in.
 
+use std::borrow::Cow;
+
 use ratatui::style::Color;
 use ratatui::symbols::border;
 use ratatui::widgets::{Block, Borders};
@@ -146,6 +148,15 @@ impl Skin {
         }
     }
 
+    /// The glyphs a completed row flashes as: a solid bar, or `#` for the two
+    /// skins meant for terminals that cannot be trusted with block characters.
+    pub fn flash(self) -> [&'static str; 2] {
+        match self {
+            Skin::AsciiBracket | Skin::Letter => ["#", "#"],
+            _ => ["█", "█"],
+        }
+    }
+
     /// The two glyphs for an empty cell. Never painted with a background colour,
     /// so terminal transparency survives.
     pub fn empty(self) -> [&'static str; 2] {
@@ -229,12 +240,6 @@ impl BorderStyle {
         }
     }
 
-    /// Whether this style takes a column on each side. `None` does not, which the
-    /// layout has to know: the board still needs its interior either way.
-    pub fn is_drawn(self) -> bool {
-        self != BorderStyle::None
-    }
-
     /// Apply this style to a block. Kept as one function so every panel borders
     /// consistently and nothing hand-rolls a `Borders::ALL`.
     pub fn apply(self, block: Block<'_>) -> Block<'_> {
@@ -255,6 +260,40 @@ pub struct Visuals {
     pub theme: Theme,
     pub skin: Skin,
     pub border: BorderStyle,
+}
+
+impl Visuals {
+    /// Whether the player picked either ASCII option, which is the only signal
+    /// there is that the terminal cannot be trusted with Unicode. Backgrounds with
+    /// Unicode glyphs fall back to ASCII ones when this is set.
+    pub fn ascii_only(&self) -> bool {
+        self.skin == Skin::AsciiBracket || self.border == BorderStyle::Ascii
+    }
+
+    /// Interface text as it should be drawn: unchanged normally, and with its
+    /// arrows and punctuation spelled out in ASCII when `ascii_only` is set.
+    pub fn text<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        if !self.ascii_only() || text.is_ascii() {
+            return Cow::Borrowed(text);
+        }
+        // Pairs first, so a hint's "↑↓" reads as one phrase, not two words.
+        const PLAIN: [(&str, &str); 9] = [
+            ("↑↓", "up/down"),
+            ("←→", "left/right"),
+            ("←", "Left"),
+            ("→", "Right"),
+            ("↑", "Up"),
+            ("↓", "Down"),
+            ("—", "-"),
+            ("·", "|"),
+            ("…", "..."),
+        ];
+        let mut plain = text.to_string();
+        for (fancy, ascii) in PLAIN {
+            plain = plain.replace(fancy, ascii);
+        }
+        Cow::Owned(plain)
+    }
 }
 
 #[cfg(test)]
@@ -366,13 +405,6 @@ mod tests {
         );
         // The ANSI theme stays symbolic, so the terminal's own palette applies.
         assert_eq!(Theme::SystemAnsi.color(PieceKind::I), Color::Cyan);
-    }
-
-    #[test]
-    fn only_the_none_border_draws_nothing() {
-        for style in BorderStyle::ALL {
-            assert_eq!(style.is_drawn(), style != BorderStyle::None, "{style:?}");
-        }
     }
 
     #[test]

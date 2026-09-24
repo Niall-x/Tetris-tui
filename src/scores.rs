@@ -5,8 +5,9 @@
 //! entirely different play — so they are kept as two separate tables rather than
 //! one merged list with a mode column.
 //!
-//! Like `Config`, a missing or corrupt file falls back to an empty table rather
-//! than blocking launch, and a failed write is never worth interrupting play over.
+//! Like `Config`, a missing or corrupt file falls back rather than blocking
+//! launch — here entry by entry, so one mangled row costs only itself — and a
+//! failed write is never worth interrupting play over.
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -60,26 +61,54 @@ pub fn scores_path() -> Option<PathBuf> {
 }
 
 impl Scores {
+    /// Load from disk. A file that was not read in full is kept as
+    /// `scores.toml.bak`, because the next score recorded rewrites the file
+    /// from whatever was salvaged.
     pub fn load() -> Self {
         let Some(path) = scores_path() else {
             return Self::default();
         };
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Self::default();
-        };
-        Self::from_toml(&text)
+        crate::storage::load(&path, Self::from_table)
     }
 
     pub fn from_toml(text: &str) -> Self {
-        let mut scores: Self = toml::from_str(text).unwrap_or_default();
-        // A hand-edited file can be out of order or over-long; normalise rather
-        // than trusting it, so the ranking on screen is always the real one.
+        text.parse()
+            .map(|table| Self::from_table(table).0)
+            .unwrap_or_default()
+    }
+
+    /// Entry by entry: one mangled row costs that row, not the table. Returns
+    /// whether anything was dropped.
+    fn from_table(table: toml::Table) -> (Self, bool) {
+        let mut scores = Self::default();
+        let mut lossy = false;
         for mode in [Mode::Nes, Mode::Modern] {
+            let key = match mode {
+                Mode::Nes => "nes",
+                Mode::Modern => "modern",
+            };
+            let rows = match table.get(key) {
+                None => continue,
+                Some(toml::Value::Array(rows)) => rows,
+                Some(_) => {
+                    lossy = true;
+                    continue;
+                }
+            };
+            for row in rows {
+                match row.clone().try_into::<Entry>() {
+                    Ok(entry) => scores.table_mut(mode).push(entry),
+                    Err(_) => lossy = true,
+                }
+            }
+
+            // A hand-edited file can be out of order or over-long; normalise
+            // rather than trusting it, so the ranking on screen is the real one.
             let table = scores.table_mut(mode);
             table.sort_by_key(|entry| std::cmp::Reverse(entry.score));
             table.truncate(MAX_ENTRIES);
         }
-        scores
+        (scores, lossy)
     }
 
     pub fn to_toml(&self) -> String {
@@ -90,10 +119,7 @@ impl Scores {
         let Some(path) = scores_path() else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, self.to_toml())
+        crate::storage::write_atomic(&path, &self.to_toml())
     }
 
     pub fn table(&self, mode: Mode) -> &[Entry] {
@@ -260,6 +286,45 @@ mod tests {
         let scores = Scores::from_toml("}}} not toml");
         assert!(scores.table(Mode::Nes).is_empty());
         assert!(scores.table(Mode::Modern).is_empty());
+    }
+
+    /// One mangled row used to cost both tables — and the next high score then
+    /// saved the empty result over every score the player had.
+    #[test]
+    fn a_mangled_row_costs_only_itself() {
+        let text = "\
+[[nes]]
+name = \"good\"
+score = 500
+
+[[nes]]
+name = \"bad\"
+score = \"lots\"
+
+[[modern]]
+name = \"fine\"
+score = 9000
+";
+        let table = text.parse::<toml::Table>().unwrap();
+        let (scores, lossy) = Scores::from_table(table);
+        assert!(lossy, "the dropped row is reported");
+        let nes: Vec<&str> = scores
+            .table(Mode::Nes)
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(nes, ["good"]);
+        assert_eq!(scores.table(Mode::Modern)[0].score, 9000);
+    }
+
+    #[test]
+    fn a_clean_file_reports_nothing_dropped() {
+        let mut scores = Scores::default();
+        scores.insert(Mode::Nes, entry("a", 100));
+        let table = scores.to_toml().parse::<toml::Table>().unwrap();
+        let (restored, lossy) = Scores::from_table(table);
+        assert!(!lossy);
+        assert_eq!(restored.table(Mode::Nes), scores.table(Mode::Nes));
     }
 
     /// The file is meant to be hand-editable, so it cannot be trusted to be sorted

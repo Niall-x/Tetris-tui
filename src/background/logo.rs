@@ -9,6 +9,8 @@
 
 use std::time::Duration;
 
+use ratatui::layout::Size;
+
 use ratatui::style::{Color, Modifier, Style};
 
 use super::{Background, Canvas, PerformanceSignal};
@@ -38,7 +40,7 @@ impl LogoBackground {
 
 impl Background for LogoBackground {
     /// §8.3: a repeated logo reads fine without motion, so this is static.
-    fn tick(&mut self, _dt: Duration) {}
+    fn tick(&mut self, _dt: Duration, _size: Size, _signal: &PerformanceSignal) {}
 
     fn render(&self, canvas: &mut Canvas, _visuals: &Visuals, _signal: &PerformanceSignal) {
         let art = self.logo.art;

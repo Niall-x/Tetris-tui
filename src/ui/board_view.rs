@@ -52,7 +52,7 @@ pub fn render(buf: &mut Buffer, area: Rect, game: &Game, visuals: &Visuals) {
             // Flash a cleared row as a solid bar, the NES line-clear tell.
             for x in 0..board.width() as u16 {
                 let style = Style::default().fg(visuals.theme.flash());
-                paint_cell(buf, area, x, row, ["█", "█"], style);
+                paint_cell(buf, area, x, row, visuals.skin.flash(), style);
             }
             continue;
         }

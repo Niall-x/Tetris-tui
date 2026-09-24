@@ -37,6 +37,17 @@ impl Mode {
     pub fn has_hold(self) -> bool {
         self == Mode::Modern
     }
+
+    /// The levels a run can start on. NES offers 0-29: the level-select screen's
+    /// 0-19 plus the 20-29 the A+select trick reaches. Modern is 1-based, and past
+    /// 20 the Guideline curve is already beyond 1G, so a higher start stops meaning
+    /// anything.
+    pub fn start_levels(self) -> std::ops::RangeInclusive<u32> {
+        match self {
+            Mode::Nes => 0..=29,
+            Mode::Modern => 1..=20,
+        }
+    }
 }
 
 /// The superset of both modes' inputs. NES ignores the fields it has no concept of.
@@ -55,6 +66,8 @@ pub struct Input {
 pub struct Events {
     pub piece_locked: bool,
     pub lines_cleared: u32,
+    /// The placement was a T-spin, full or mini. Only modern mode has them.
+    pub tspin: bool,
     pub level_up: bool,
     pub topped_out: bool,
 }
@@ -99,6 +112,7 @@ impl Game {
                 Events {
                     piece_locked: events.piece_locked,
                     lines_cleared: events.lines_cleared,
+                    tspin: false,
                     level_up: events.level_up,
                     topped_out: events.topped_out,
                 }
@@ -116,6 +130,7 @@ impl Game {
                 Events {
                     piece_locked: events.piece_locked,
                     lines_cleared: events.lines_cleared,
+                    tspin: events.tspin.is_some(),
                     level_up: events.level_up,
                     topped_out: events.topped_out,
                 }

@@ -440,6 +440,7 @@ Ordered to de-risk rules-accuracy first, cosmetics last.
 - **NRS geometry.** Derived from the ROM's 19-orientation table at $8A9C, with the one orientation quoted verbatim in the source (Td) asserted directly, plus structural tests: 19 orientations total, state counts 4/4/4/2/2/2/1, and every successive state a true clockwise rotation.
 - **SRS kick-table sign convention** (§4.1) — resolved. Published offsets grow y upward; the board's rows grow downward, so the sign is flipped in exactly one function. Pinned by two real-board scenarios: a vertical I against the left wall kicking right via test 3, and a flat I on the floor kicking *up* two rows via test 5.
 - **7-bag first piece** (§4.3) — resolved. The Guideline places no constraint on the first piece; the "never S/Z/O first" rule belongs to Tetris The Grand Master Ace, not the Guideline (tetris.wiki/Random_Generator). Implemented as a plain shuffle. The documented guarantees (max 12-piece gap, S/Z runs bounded at 4) are asserted as property tests.
+- **fastfetch logo invocation** (§8.3) — not needed. The logo background took §8.3's recommended route of bundling its own distro logos, matched from `/etc/os-release`, so nothing ever calls `fastfetch`.
 
 ### Still open
 
@@ -449,10 +450,7 @@ Ordered to de-risk rules-accuracy first, cosmetics last.
 - Exact NES line-clear animation delay/frame-parity table (§3.4) — currently a flat 18 frames.
 - NES soft-drop rate (§3.4) — implemented as one row per 2 frames, the commonly cited figure, not confirmed against a disassembly.
 - **Spawn headroom.** The ROM's playfield is exactly 10x20 with pieces spawning flat on row 0, but the vertical T/J/L orientations reach a row above their pivot (I reaches two), which would make a piece unrotatable the instant it appears. Two hidden rows were added so rotation works immediately, matching how the real game plays. Worth confirming by playtest against real NES Tetris.
-- SRS kick table y-axis sign convention against our board's row-down coordinate system (§4.1) — pin with unit tests against known scenarios before trusting.
 - Guideline combo formula variance across commercial titles (linear `50×combo×level` vs. some titles' lookup tables), and the exact combo-count starting index (§4.5) — implementing the commonly documented linear formula as the reference default.
-- Whether 7-bag's first bag is constrained so its first piece is never S/Z/O (§4.3) — widely cited convention, not confirmed against a primary source this pass.
-- fastfetch's exact CLI invocation for a logo-only, no-info-modules print (§8.3) — flags are confirmed to exist, precise combination needs a doc/`--help` check.
 
 ---
 

@@ -21,7 +21,7 @@ use crate::menu::{
     TitleItem, TitleMenu,
 };
 use crate::scores::Scores;
-use crate::ui::style::BorderStyle;
+use crate::ui::style::{BorderStyle, Visuals};
 
 /// Figlet "ANSI Shadow", which is 45 columns wide — below that the title screen
 /// falls back to plain text rather than wrapping into rubble.
@@ -105,10 +105,18 @@ fn menu_column(labels: &[String], selected: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
-pub fn render_title(frame: &mut Frame, area: Rect, menu: &TitleMenu, mode: Mode) {
+pub fn render_title(
+    frame: &mut Frame,
+    area: Rect,
+    menu: &TitleMenu,
+    mode: Mode,
+    visuals: &Visuals,
+) {
     let mut lines: Vec<Line> = Vec::new();
 
-    if area.width >= LOGO_WIDTH && area.height >= 16 {
+    // The logo is block and box-drawing characters, so an ASCII setting gets
+    // the plain title too.
+    if !visuals.ascii_only() && area.width >= LOGO_WIDTH && area.height >= 16 {
         for (row, colour) in LOGO.iter().zip(LOGO_COLORS) {
             lines.push(Line::from(Span::styled(*row, Style::default().fg(colour))));
         }
@@ -128,13 +136,15 @@ pub fn render_title(frame: &mut Frame, area: Rect, menu: &TitleMenu, mode: Mode)
         .map(|item| match item {
             // The title screen says which ruleset Play will start, so the mode is
             // never a surprise once the first piece is already falling.
-            TitleItem::Play => format!("Play — {}", mode.label()),
+            TitleItem::Play => visuals
+                .text(&format!("Play — {}", mode.label()))
+                .into_owned(),
             other => other.label().to_string(),
         })
         .collect();
     lines.extend(menu_column(&labels, menu.selected));
     lines.push(Line::from(""));
-    lines.push(dim("↑↓ choose · enter select · q quit"));
+    lines.push(dim(visuals.text("↑↓ choose · enter select · q quit")));
 
     let height = lines.len() as u16;
     let width = lines
@@ -143,6 +153,10 @@ pub fn render_title(frame: &mut Frame, area: Rect, menu: &TitleMenu, mode: Mode)
         .max()
         .unwrap_or(0);
     let rect = centered(area, width, height);
+    // The attract-mode background runs right up to the menu. A clear margin
+    // around it keeps moving glyphs out of the gaps between centred lines, and
+    // clearing resets cells rather than filling them, so transparency survives.
+    frame.render_widget(Clear, centered(area, width + 4, height + 2));
     frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), rect);
 }
 
@@ -193,6 +207,7 @@ fn option_label(row: OptionRow) -> String {
 pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config: &Config) {
     let rows = OptionsMenu::rows(config);
     let keymap = config.keymap();
+    let visuals = config.visuals();
 
     let block = config.border.apply(
         Block::default()
@@ -226,6 +241,8 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
         } else {
             option_value(*row, config, &keymap)
         };
+        // Key names include arrows, which an ASCII setting spells out.
+        let value = visuals.text(&value).into_owned();
 
         // Right-align the value against the panel edge so the column reads.
         let pad = (interior.width as usize)
@@ -240,7 +257,7 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
 
     if let Some(notice) = &menu.notice {
         lines.push(Line::from(Span::styled(
-            notice.clone(),
+            visuals.text(notice).into_owned(),
             Style::default().fg(Color::Yellow),
         )));
     } else if menu.rebinding.is_some() {
@@ -249,7 +266,7 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
         // §9: the background list is the one row whose choices need explaining.
         lines.push(dim(config.background.description()));
     } else {
-        lines.push(dim("←→ change · enter rebind · esc back"));
+        lines.push(dim(visuals.text("←→ change · enter rebind · esc back")));
     }
     lines.push(dim("changes are saved as you make them"));
 
@@ -271,13 +288,17 @@ pub fn render_scores(
     area: Rect,
     view: &ScoresView,
     scores: &Scores,
-    border: BorderStyle,
+    visuals: &Visuals,
 ) {
     let table = scores.table(view.mode);
 
-    let block = border.apply(
+    let block = visuals.border.apply(
         Block::default()
-            .title(format!(" HIGH SCORES — {} ", view.mode.label()))
+            .title(
+                visuals
+                    .text(&format!(" HIGH SCORES — {} ", view.mode.label()))
+                    .into_owned(),
+            )
             .border_style(Style::default().fg(Color::DarkGray)),
     );
 
@@ -302,7 +323,7 @@ pub fn render_scores(
         }
     }
     lines.push(Line::from(""));
-    lines.push(dim("←→ other mode · esc back"));
+    lines.push(dim(visuals.text("←→ other mode · esc back")));
 
     // Wide enough for the full row: rank, a 10-character name, score, lines,
     // level and the date, which is the widest thing on the screen. The box is
@@ -458,7 +479,13 @@ mod tests {
     fn the_title_screen_shows_the_logo_and_the_mode_to_be_played() {
         let menu = TitleMenu::default();
         let rendered = draw(80, 24, |frame| {
-            render_title(frame, frame.area(), &menu, Mode::Modern)
+            render_title(
+                frame,
+                frame.area(),
+                &menu,
+                Mode::Modern,
+                &Visuals::default(),
+            )
         });
         println!("{rendered}");
         assert!(rendered.contains("Play"));
@@ -473,7 +500,7 @@ mod tests {
     fn a_narrow_title_screen_falls_back_to_plain_text() {
         let menu = TitleMenu::default();
         let rendered = draw(24, 22, |frame| {
-            render_title(frame, frame.area(), &menu, Mode::Nes)
+            render_title(frame, frame.area(), &menu, Mode::Nes, &Visuals::default())
         });
         println!("{rendered}");
         assert!(rendered.contains("T E T R I S"));
@@ -583,7 +610,7 @@ mod tests {
         let scores = Scores::default();
         let view = ScoresView::new(Mode::Nes);
         let rendered = draw(60, 20, |frame| {
-            render_scores(frame, frame.area(), &view, &scores, BorderStyle::default())
+            render_scores(frame, frame.area(), &view, &scores, &Visuals::default())
         });
         println!("{rendered}");
         assert!(rendered.contains("HIGH SCORES"));
@@ -606,7 +633,7 @@ mod tests {
         );
         let view = ScoresView::new(Mode::Modern);
         let rendered = draw(60, 20, |frame| {
-            render_scores(frame, frame.area(), &view, &scores, BorderStyle::default())
+            render_scores(frame, frame.area(), &view, &scores, &Visuals::default())
         });
         println!("{rendered}");
         assert!(rendered.contains("niall"));
@@ -675,7 +702,13 @@ mod tests {
         let scores = Scores::default();
         for (width, height) in [(22u16, 22u16), (24, 10), (1, 1)] {
             draw(width, height, |frame| {
-                render_title(frame, frame.area(), &TitleMenu::default(), Mode::Nes)
+                render_title(
+                    frame,
+                    frame.area(),
+                    &TitleMenu::default(),
+                    Mode::Nes,
+                    &Visuals::default(),
+                )
             });
             draw(width, height, |frame| {
                 render_options(frame, frame.area(), &OptionsMenu::default(), &config)
@@ -686,7 +719,7 @@ mod tests {
                     frame.area(),
                     &ScoresView::new(Mode::Nes),
                     &scores,
-                    BorderStyle::default(),
+                    &Visuals::default(),
                 )
             });
             draw(width, height, |frame| {

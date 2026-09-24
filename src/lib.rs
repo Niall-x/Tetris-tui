@@ -6,4 +6,5 @@ pub mod game;
 pub mod input;
 pub mod menu;
 pub mod scores;
+pub mod storage;
 pub mod ui;

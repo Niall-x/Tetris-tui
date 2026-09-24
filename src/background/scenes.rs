@@ -6,6 +6,8 @@
 
 use std::time::Duration;
 
+use ratatui::layout::Size;
+
 use ratatui::style::{Color, Modifier, Style};
 use serde::{Deserialize, Serialize};
 
@@ -110,7 +112,7 @@ impl SceneBackground {
 
 impl Background for SceneBackground {
     /// Nothing moves in a still scene.
-    fn tick(&mut self, _dt: Duration) {}
+    fn tick(&mut self, _dt: Duration, _size: Size, _signal: &PerformanceSignal) {}
 
     fn render(&self, canvas: &mut Canvas, _visuals: &Visuals, _signal: &PerformanceSignal) {
         let art_height = self.scene.art.len() as u16;

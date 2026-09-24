@@ -3,6 +3,8 @@ use std::io;
 use tetris_tui::app;
 use tetris_tui::game::Mode;
 
+const USAGE: &str = "usage: tetris-tui [nes|modern] [start-level]\nwith no arguments, the title screen opens instead";
+
 fn main() -> io::Result<()> {
     let mut mode = None;
     let mut start_level = None;
@@ -11,11 +13,14 @@ fn main() -> io::Result<()> {
         match arg.as_str() {
             "nes" => mode = Some(Mode::Nes),
             "modern" => mode = Some(Mode::Modern),
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
             other => match other.parse::<u32>() {
                 Ok(level) => start_level = Some(level),
                 Err(_) => {
-                    eprintln!("usage: tetris-tui [nes|modern] [start-level]");
-                    eprintln!("with no arguments, the title screen opens instead");
+                    eprintln!("{USAGE}");
                     std::process::exit(2);
                 }
             },

@@ -1,8 +1,9 @@
 //! User settings, persisted as hand-editable TOML.
 //!
-//! A missing or corrupt file must never stop the game starting: anything that
-//! fails to load falls back to defaults. The same goes for individual fields, so
-//! a config written by an older version still works.
+//! A missing or corrupt file must never stop the game starting, and a bad value
+//! costs only itself: each setting that cannot be read falls back to its own
+//! default (see `crate::storage`). A config written by an older version, which
+//! simply lacks the newer fields, works the same way.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -19,6 +20,7 @@ use crate::game::Mode;
 use crate::input::action::Action;
 use crate::input::keymap::Keymap;
 use crate::input::keyname::{key_name, parse_key};
+use crate::storage;
 use crate::ui::style::{BorderStyle, Skin, Theme, Visuals};
 
 const APP_DIR: &str = "tetris-tui";
@@ -82,24 +84,30 @@ fn default_bindings() -> BTreeMap<String, Vec<String>> {
         .collect()
 }
 
+fn clamp_level(mode: Mode, level: u32) -> u32 {
+    let range = mode.start_levels();
+    level.clamp(*range.start(), *range.end())
+}
+
 pub fn config_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join(APP_DIR).join(CONFIG_FILE))
 }
 
 impl Config {
-    /// Load from disk, falling back to defaults for anything unreadable.
+    /// Load from disk, falling back to the default for each setting that is
+    /// missing or unreadable. A file that was not read in full is kept as
+    /// `config.toml.bak`, since it is rewritten on exit.
     pub fn load() -> Self {
         let Some(path) = config_path() else {
             return Self::default();
         };
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Self::default();
-        };
-        Self::from_toml(&text)
+        storage::load(&path, storage::lenient)
     }
 
     pub fn from_toml(text: &str) -> Self {
-        toml::from_str(text).unwrap_or_default()
+        text.parse()
+            .map(|table| storage::lenient(table).0)
+            .unwrap_or_default()
     }
 
     pub fn to_toml(&self) -> String {
@@ -110,23 +118,26 @@ impl Config {
         let Some(path) = config_path() else {
             return Ok(());
         };
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, self.to_toml())
+        storage::write_atomic(&path, &self.to_toml())
     }
 
+    /// Clamped on the way out as well as in, since a hand-edited file can hold
+    /// anything.
     pub fn start_level(&self, mode: Mode) -> u32 {
-        match mode {
+        let level = match mode {
             Mode::Nes => self.nes_start_level,
             Mode::Modern => self.modern_start_level,
-        }
+        };
+        clamp_level(mode, level)
     }
 
+    /// Out-of-range levels — from the command line, say — are pulled into the
+    /// mode's range rather than rejected.
     pub fn set_start_level(&mut self, mode: Mode, level: u32) {
+        let level = clamp_level(mode, level);
         match mode {
             Mode::Nes => self.nes_start_level = level,
-            Mode::Modern => self.modern_start_level = level.max(1),
+            Mode::Modern => self.modern_start_level = level,
         }
     }
 
@@ -234,6 +245,19 @@ mod tests {
         assert!(!config.bindings.is_empty());
     }
 
+    /// One bad value used to reset every setting, and the config is written on
+    /// exit, so the player's hand edits were lost with it.
+    #[test]
+    fn one_bad_value_does_not_reset_the_rest() {
+        let config = Config::from_toml(
+            "mode = \"Tetris\"\nghost = false\ntheme = \"SystemAnsi\"\nplayer_name = \"ada\"",
+        );
+        assert_eq!(config.mode, Mode::Nes, "the bad value takes its default");
+        assert!(!config.ghost);
+        assert_eq!(config.theme, Theme::SystemAnsi);
+        assert_eq!(config.player_name, "ada");
+    }
+
     /// A config written by an older version is missing fields; those should take
     /// their defaults rather than losing the whole file.
     #[test]
@@ -321,5 +345,19 @@ mod tests {
         assert!(text.contains("mode"));
         assert!(text.contains("move_left"));
         assert!(toml::from_str::<toml::Value>(&text).is_ok());
+    }
+
+    /// A level from the command line or a hand-edited file can be anything; the
+    /// run must still start on one the mode actually has.
+    #[test]
+    fn start_levels_are_clamped_to_the_modes_range() {
+        let mut config = Config::default();
+        config.set_start_level(Mode::Nes, 99);
+        assert_eq!(config.start_level(Mode::Nes), 29);
+        config.set_start_level(Mode::Modern, 0);
+        assert_eq!(config.start_level(Mode::Modern), 1);
+
+        let edited = Config::from_toml("modern_start_level = 500");
+        assert_eq!(edited.start_level(Mode::Modern), 20);
     }
 }

@@ -10,9 +10,8 @@ The full design, including every researched rule value and its source, is in
 ## Status
 
 Both modes are playable, with menus, rebindable keys, saved high scores,
-selectable visuals and the first of the backgrounds. The animated backgrounds
-(matrix rain, pipes, bonsai, nyancat, aquarium, the reactive cow) are not built
-yet — see the phase table in `brief.md` §13.
+selectable visuals and all ten backgrounds. What is left is the Phase 8 polish
+pass and the optional audio — see the phase table in `brief.md` §13.
 
 Done so far:
 
@@ -35,9 +34,10 @@ Done so far:
 - Three independent visual axes: colour theme, tetromino skin and board border,
   including plain-ASCII and letter-per-cell options for terminals with poor
   Unicode or colour support
-- Background layer, with the still ones built: blank (keeps terminal
-  transparency), bundled scenes, and your distribution's logo tiled behind the
-  field. It runs on the title screen too, as attract mode
+- Background layer: blank (keeps terminal transparency), bundled scenes, your
+  distribution's logo tiled behind the field, and the animated matrix rain,
+  pipes, nyancat, bonsai, aquarium and locomotive, and a cow that comments on
+  your play. It runs on the title screen too, as attract mode
 
 ## Running
 
@@ -64,6 +64,22 @@ Tests:
 ```sh
 nix develop -c cargo test
 ```
+
+## Building a release
+
+```sh
+nix build                                 # result/bin/tetris-tui
+nix run                                   # or run it straight from the flake
+nix develop -c cargo build --release      # target/release/tetris-tui
+```
+
+Either way it is a single binary of about 1.5 MB with no runtime dependencies.
+A flake build only sees files git tracks, so a file added since the last commit
+needs a `git add` before `nix build` will find it.
+
+The default build has no audio code or audio dependencies at all. The `audio`
+Cargo feature is reserved for the optional music and sound phase (`brief.md`
+§12) and does nothing yet.
 
 ## Screens
 
@@ -98,9 +114,20 @@ changes:
   `Letters` (the piece's own letter, which identifies pieces without colour)
 - **Board border** — `None`, `ASCII`, `Single`, `Double`, `Rounded` or `Heavy`,
   applied to the menus as well as the board
-- **Background** — `Blank`, `Scene` (with a scene picker, or `Random` for one per
-  session) or `Distro logo`, read from `/etc/os-release`. Backgrounds never draw
-  inside the playfield or the HUD panels
+- **Background** — drawn behind the field, never inside the playfield or the HUD
+  panels. With either ASCII option picked they keep to ASCII glyphs too.
+  - `Blank` — nothing, which keeps terminal transparency
+  - `Scene` — a still scene, with a picker, or `Random` for one per session
+  - `Distro logo` — your distribution's logo, read from `/etc/os-release`
+  - `Matrix rain` — cmatrix's falling columns
+  - `Pipes` — pipes.sh, drawn in the board's border style
+  - `Nyancat` — an occasional visitor, its rainbow in the theme's colours
+  - `Bonsai` — grown by cbonsai's rules in the widest free margin
+  - `Aquarium` — asciiquarium's fish, bubbles and seaweed
+  - `Cowsay` — reacts to the run: celebrates a Tetris or T-spin clear, cheers a
+    combo, gets smug on back-to-back and nervous as the stack nears the top
+  - `Locomotive` — sl's steam train every so often, and always one when a run
+    tops out
 - **Key bindings** — `Enter` on a row, then press the key. A key already bound to
   something else is refused rather than silently stolen
 
@@ -111,9 +138,12 @@ changes:
 | `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, theme, skin, border, background, bindings |
 | `~/.local/share/tetris-tui/scores.toml` | two top-10 tables, NES and modern kept apart |
 
-Both are plain TOML and meant to be hand-editable. A missing or corrupt file
-falls back to defaults rather than blocking launch, and a hand-sorted score table
-is re-sorted on load.
+Both are plain TOML and meant to be hand-editable, so a mistake costs only
+itself: a setting that cannot be read takes its default, and a mangled score row
+is dropped, rather than either file being thrown away. Whenever anything had to
+be dropped, the file as it was is copied to `config.toml.bak` or
+`scores.toml.bak` before the game can write over it. A hand-sorted score table
+is re-sorted on load, and both files are written atomically.
 
 ## Controls
 

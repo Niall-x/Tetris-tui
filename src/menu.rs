@@ -179,12 +179,6 @@ impl PauseMenu {
 // Options
 // ---------------------------------------------------------------------------
 
-/// Levels the NES level-select screen offers, plus the 20-29 range the A+select
-/// trick reaches.
-const NES_MAX_LEVEL: u32 = 29;
-/// Modern levels are 1-based; above 20 the Guideline curve is already past 1G and
-/// the level select stops being meaningful.
-const MODERN_MAX_LEVEL: u32 = 20;
 const MAX_DELAY_FRAMES: u32 = 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,16 +286,14 @@ impl OptionsMenu {
                 self.selected = self.selected.min(len - 1);
             }
             OptionRow::StartLevel => {
+                // `set_start_level` clamps to the mode's range, so this only has
+                // to step.
                 let mode = config.mode;
-                let (min, max) = match mode {
-                    Mode::Nes => (0, NES_MAX_LEVEL),
-                    Mode::Modern => (1, MODERN_MAX_LEVEL),
-                };
                 let level = config.start_level(mode);
                 let next = if forward {
-                    (level + 1).min(max)
+                    level + 1
                 } else {
-                    level.saturating_sub(1).max(min)
+                    level.saturating_sub(1)
                 };
                 config.set_start_level(mode, next);
             }
@@ -653,7 +645,10 @@ mod tests {
         for _ in 0..40 {
             menu.navigate(MenuInput::Right, &mut config);
         }
-        assert_eq!(config.start_level(Mode::Nes), NES_MAX_LEVEL);
+        assert_eq!(
+            config.start_level(Mode::Nes),
+            *Mode::Nes.start_levels().end()
+        );
 
         for _ in 0..40 {
             menu.navigate(MenuInput::Left, &mut config);
