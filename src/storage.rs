@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+/// The folder both files live in, under the platform's config directory for
+/// settings and its data directory for scores.
+pub const APP_DIR: &str = "tetris-tui";
+
 /// Load `path` with `parse`, which returns the value and whether it had to drop
 /// anything to get it. A missing file is simply the default.
 pub fn load<T: Default>(path: &Path, parse: impl FnOnce(toml::Table) -> (T, bool)) -> T {

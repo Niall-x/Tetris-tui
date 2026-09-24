@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
+use crate::background::running_rainbow;
 use crate::config::Config;
 use crate::game::Mode;
 use crate::input::keymap::{Keymap, MenuKeymap, FIXED_MENU_KEYS};
@@ -37,15 +38,9 @@ const LOGO: [&str; 6] = [
 
 const LOGO_WIDTH: u16 = 45;
 
-/// The tetromino palette, applied a row at a time down the logo.
-const LOGO_COLORS: [Color; 6] = [
-    Color::Cyan,
-    Color::Yellow,
-    Color::Magenta,
-    Color::Green,
-    Color::Red,
-    Color::Blue,
-];
+/// Frames each band of the logo's rainbow holds a row before moving down: a
+/// slow roll, where the distro logo's Tetris flash (3 frames) is a burst.
+const LOGO_RAINBOW_STEP: u32 = 24;
 
 const SELECTED: Style = Style::new()
     .fg(Color::Black)
@@ -106,33 +101,38 @@ fn menu_column(labels: &[String], selected: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// `frames` is how long the app has been running, which the logo's rainbow
+/// runs by.
 pub fn render_title(
     frame: &mut Frame,
     area: Rect,
     menu: &TitleMenu,
     mode: Mode,
     visuals: &Visuals,
+    frames: u32,
 ) {
     let mut lines: Vec<Line> = Vec::new();
 
     // The logo is block and box-drawing characters, so an ASCII setting gets
-    // the plain title too.
+    // the plain title too. Either way it takes a rainbow of the theme's piece
+    // colours, rolling slowly down it; the one-line title just cycles.
+    let colour = |row| running_rainbow(row, frames, LOGO_RAINBOW_STEP, visuals);
     if !visuals.ascii_interface() && area.width >= LOGO_WIDTH && area.height >= 16 {
-        for (row, colour) in LOGO.iter().zip(LOGO_COLORS) {
-            lines.push(Line::from(Span::styled(*row, Style::default().fg(colour))));
+        for (row, line) in LOGO.iter().enumerate() {
+            lines.push(Line::from(Span::styled(
+                *line,
+                Style::default().fg(colour(row)),
+            )));
         }
     } else {
         lines.push(Line::from(Span::styled(
             "T E T R I S",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(colour(0)).add_modifier(Modifier::BOLD),
         )));
     }
 
     lines.push(Line::from(""));
-    let labels: Vec<String> = menu
-        .items()
+    let labels: Vec<String> = TitleItem::ALL
         .into_iter()
         .map(|item| match item {
             // The title screen says which ruleset Play will start, so the mode is
@@ -458,7 +458,7 @@ pub fn render_game_over(
                 Style::default().fg(Color::White).bg(Color::Black),
             ),
         ]));
-        lines.push(dim("enter to confirm"));
+        lines.push(dim("enter saves, esc skips"));
     } else {
         if let Some(rank) = menu.rank {
             lines.push(Line::from(Span::styled(
@@ -557,6 +557,7 @@ mod tests {
                 &menu,
                 Mode::Modern,
                 &Visuals::default(),
+                0,
             )
         });
         println!("{rendered}");
@@ -566,13 +567,77 @@ mod tests {
         assert!(rendered.contains('█'), "logo should be drawn at this size");
     }
 
+    /// The colour of each of the logo's six rows, top to bottom, as drawn: the
+    /// first block or corner glyph on each, which only the logo uses.
+    fn logo_row_colours(frames: u32, visuals: &Visuals) -> Vec<Color> {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_title(
+                    frame,
+                    frame.area(),
+                    &TitleMenu::default(),
+                    Mode::Nes,
+                    visuals,
+                    frames,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .filter_map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| &buffer[(x, y)])
+                    .find(|cell| matches!(cell.symbol(), "█" | "╚"))
+                    .map(|cell| cell.fg)
+            })
+            .collect()
+    }
+
+    /// The logo is a rainbow of the theme's own piece colours, rolling down a
+    /// row every `LOGO_RAINBOW_STEP` frames.
+    #[test]
+    fn the_title_logo_rolls_a_rainbow_in_the_themes_colours() {
+        use crate::background::RAINBOW;
+        use crate::ui::style::Theme;
+
+        for theme in Theme::ALL {
+            let visuals = Visuals {
+                theme,
+                ..Visuals::default()
+            };
+            let rainbow: Vec<Color> = RAINBOW.iter().map(|&kind| theme.color(kind)).collect();
+            assert_eq!(logo_row_colours(0, &visuals), rainbow, "{theme:?}");
+
+            let before = logo_row_colours(0, &visuals);
+            let after = logo_row_colours(LOGO_RAINBOW_STEP, &visuals);
+            assert_eq!(
+                after[1..],
+                before[..5],
+                "{theme:?}: each band moved down a row"
+            );
+            assert_eq!(
+                logo_row_colours(LOGO_RAINBOW_STEP - 1, &visuals),
+                before,
+                "{theme:?}: and not before its step"
+            );
+        }
+    }
+
     /// The logo is 45 columns; a narrow terminal must get the plain title instead
     /// of a wrapped mess.
     #[test]
     fn a_narrow_title_screen_falls_back_to_plain_text() {
         let menu = TitleMenu::default();
         let rendered = draw(24, 22, |frame| {
-            render_title(frame, frame.area(), &menu, Mode::Nes, &Visuals::default())
+            render_title(
+                frame,
+                frame.area(),
+                &menu,
+                Mode::Nes,
+                &Visuals::default(),
+                0,
+            )
         });
         println!("{rendered}");
         assert!(rendered.contains("T E T R I S"));
@@ -785,6 +850,7 @@ mod tests {
                     &TitleMenu::default(),
                     Mode::Nes,
                     &Visuals::default(),
+                    0,
                 )
             });
             draw(width, height, |frame| {

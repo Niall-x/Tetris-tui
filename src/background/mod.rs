@@ -26,11 +26,68 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Rect, Size};
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use serde::{Deserialize, Serialize};
 
+use crate::engine::piece::PieceKind;
 use crate::game::Game;
 use crate::ui::style::Visuals;
+
+/// Rainbow bands, top to bottom, as the pieces whose colours they borrow: the
+/// piece colours happen to run red to purple in exactly rainbow order, so a
+/// rainbow follows the theme.
+pub const RAINBOW: [PieceKind; 6] = [
+    PieceKind::Z,
+    PieceKind::L,
+    PieceKind::O,
+    PieceKind::S,
+    PieceKind::J,
+    PieceKind::T,
+];
+
+/// The colour of `row` in a rainbow running down through a piece of art,
+/// `frames` into the animation, each band moving down a row every
+/// `frames_per_row` frames. Each row takes the band above it a step later, so
+/// the rainbow runs downward.
+pub fn running_rainbow(row: usize, frames: u32, frames_per_row: u32, visuals: &Visuals) -> Color {
+    let bands = RAINBOW.len();
+    let step = (frames / frames_per_row.max(1)) as usize % bands;
+    visuals.theme.color(RAINBOW[(row + bands - step) % bands])
+}
+
+/// Turn a piece of ASCII art round to face the other way: each line padded to
+/// the art's width so the rows stay aligned, reversed, and the characters that
+/// have a facing swapped for their partners. Trailing blanks are dropped, since
+/// drawing skips spaces anyway.
+pub fn mirror<S: AsRef<str>>(art: &[S]) -> Vec<String> {
+    let width = art
+        .iter()
+        .map(|line| line.as_ref().chars().count())
+        .max()
+        .unwrap_or(0);
+    art.iter()
+        .map(|line| {
+            let reversed: String = format!("{:<width$}", line.as_ref())
+                .chars()
+                .rev()
+                .map(|ch| match ch {
+                    '/' => '\\',
+                    '\\' => '/',
+                    '(' => ')',
+                    ')' => '(',
+                    '[' => ']',
+                    ']' => '[',
+                    '{' => '}',
+                    '}' => '{',
+                    '<' => '>',
+                    '>' => '<',
+                    other => other,
+                })
+                .collect();
+            reversed.trim_end().to_string()
+        })
+        .collect()
+}
 
 /// What the game is currently doing, for backgrounds that react to it.
 ///
@@ -50,9 +107,11 @@ pub struct PerformanceSignal {
     pub placements: u64,
     /// 0.0 empty, 1.0 stacked to the top.
     pub stack_height: f32,
-    pub score: u64,
-    pub level: u32,
     pub game_over: bool,
+    /// Four rows are on the board mid-clear: a Tetris, while its line-clear
+    /// delay runs. Always true for a moment in NES, which has a delay built
+    /// in; in modern only when the player has set one.
+    pub tetris_clearing: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -105,9 +164,8 @@ impl PerformanceSignal {
             last_tspin: history.last_tspin,
             placements: history.placements,
             stack_height: game.board().stack_height_fraction(),
-            score: game.score(),
-            level: game.level(),
             game_over: game.is_over(),
+            tetris_clearing: game.clearing_rows().len() == 4,
         }
     }
 }
@@ -180,8 +238,13 @@ impl<'a> Canvas<'a> {
         })
     }
 
-    /// Draw one glyph at a canvas-relative position.
-    pub fn set(&mut self, x: u16, y: u16, symbol: &str, style: Style) {
+    /// Draw one glyph at a canvas-relative position. Positions may be negative:
+    /// art sliding in from an edge is drawn from wherever it starts, and the
+    /// part off the canvas is dropped.
+    pub fn set(&mut self, x: impl Into<i32>, y: impl Into<i32>, symbol: &str, style: Style) {
+        let (Ok(x), Ok(y)) = (u16::try_from(x.into()), u16::try_from(y.into())) else {
+            return;
+        };
         if !self.accepts(x, y) {
             return;
         }
@@ -190,40 +253,30 @@ impl<'a> Canvas<'a> {
             .set_style(style);
     }
 
-    /// Draw one character at a canvas-relative position.
-    pub fn put(&mut self, x: u16, y: u16, ch: char, style: Style) {
+    /// Draw one character, clipped like [`Canvas::set`].
+    pub fn put(&mut self, x: impl Into<i32>, y: impl Into<i32>, ch: char, style: Style) {
         let mut buffer = [0u8; 4];
         self.set(x, y, ch.encode_utf8(&mut buffer), style);
     }
 
-    /// Draw a line of text, one glyph per column, stopping at the edge. Spaces are
-    /// skipped rather than painted, so art stays transparent where it is blank and
-    /// the terminal's own background shows through (§5).
-    pub fn text(&mut self, x: u16, y: u16, text: &str, style: Style) {
-        for (offset, ch) in text.chars().enumerate() {
-            if ch == ' ' {
-                continue;
+    /// Draw a line of text, one glyph per column, clipped like [`Canvas::set`].
+    /// Spaces are skipped rather than painted, so art stays transparent where
+    /// it is blank and the terminal's own background shows through (§5).
+    pub fn text(&mut self, x: impl Into<i32>, y: impl Into<i32>, text: &str, style: Style) {
+        let y = y.into();
+        for (column, ch) in (x.into()..).zip(text.chars()) {
+            if ch != ' ' {
+                self.put(column, y, ch, style);
             }
-            let Ok(offset) = u16::try_from(offset) else {
-                return;
-            };
-            let Some(column) = x.checked_add(offset) else {
-                return;
-            };
-            if column >= self.area.width {
-                return;
-            }
-            self.put(column, y, ch, style);
         }
     }
 
-    /// The widest run of columns that no reserved region touches from `from_row`
-    /// down, as `(first column, width)`: where art standing on the bottom edge
-    /// can go without disappearing behind the board. A short HUD panel beside
-    /// the board leaves the space beneath it free, which is why this is not
-    /// simply the widest margin. The whole canvas when nothing is reserved.
-    pub fn widest_free_span(&self, from_row: u16) -> (u16, u16) {
-        let top = self.area.y.saturating_add(from_row);
+    /// Every run of columns that no reserved region touches anywhere, left to
+    /// right, as `(first column, width)`: where art can stand beside the board
+    /// without disappearing behind it. With a board on screen the first and
+    /// last are the margins either side of it; with nothing reserved there is
+    /// one, the whole width.
+    pub fn free_spans(&self) -> Vec<(u16, u16)> {
         let covered = |x: u16| {
             let ax = self.area.x + x;
             self.reserved.iter().any(|rect| {
@@ -232,38 +285,37 @@ impl<'a> Canvas<'a> {
                     && ax >= rect.x
                     && ax < rect.right()
                     && rect.y < self.area.bottom()
-                    && rect.bottom() > top
+                    && rect.bottom() > self.area.y
             })
         };
 
-        let (mut best, mut run_start) = ((0, 0), None);
+        let (mut spans, mut run_start) = (Vec::new(), None);
         for x in 0..=self.area.width {
             let free = x < self.area.width && !covered(x);
             match (free, run_start) {
                 (true, None) => run_start = Some(x),
                 (false, Some(start)) => {
-                    if x - start > best.1 {
-                        best = (start, x - start);
-                    }
+                    spans.push((start, x - start));
                     run_start = None;
                 }
                 _ => {}
             }
         }
-        best
+        spans
     }
 
-    /// Draw a block of lines with its top-left at `(x, y)`.
-    pub fn block(&mut self, x: u16, y: u16, lines: &[&str], style: Style) {
-        for (row, line) in lines.iter().enumerate() {
-            let Ok(row) = u16::try_from(row) else { return };
-            let Some(line_y) = y.checked_add(row) else {
-                return;
-            };
-            if line_y >= self.area.height {
-                return;
-            }
-            self.text(x, line_y, line, style);
+    /// Draw a block of lines with its top-left at `(x, y)`, clipped like
+    /// [`Canvas::set`].
+    pub fn block<S: AsRef<str>>(
+        &mut self,
+        x: impl Into<i32>,
+        y: impl Into<i32>,
+        lines: &[S],
+        style: Style,
+    ) {
+        let x = x.into();
+        for (row, line) in (y.into()..).zip(lines) {
+            self.text(x, row, line.as_ref(), style);
         }
     }
 }
@@ -320,14 +372,14 @@ impl BackgroundKind {
         match self {
             BackgroundKind::Blank => "nothing drawn; keeps terminal transparency",
             BackgroundKind::Scene => "a still scene behind the field",
-            BackgroundKind::DistroLogo => "your distribution's logo, tiled",
+            BackgroundKind::DistroLogo => "your distribution's logo, scattered",
             BackgroundKind::MatrixRain => "falling glyph columns, cmatrix-style",
             BackgroundKind::Pipes => "pipes laid across the screen, pipes.sh-style",
             BackgroundKind::Nyancat => "a poptart cat, now and then",
-            BackgroundKind::Bonsai => "a bonsai tree growing beside the field",
+            BackgroundKind::Bonsai => "bonsai trees growing beside the field",
             BackgroundKind::Aquarium => "fish, bubbles and seaweed, asciiquarium-style",
-            BackgroundKind::Cowsay => "a cow with opinions on how you are playing",
-            BackgroundKind::Locomotive => "a steam train now and then, sl-style",
+            BackgroundKind::Cowsay => "two cows with opinions on your play",
+            BackgroundKind::Locomotive => "sl's steam train, back and forth",
         }
     }
 
@@ -473,23 +525,24 @@ mod tests {
     }
 
     #[test]
-    fn the_widest_free_span_steps_around_reserved_columns() {
+    fn free_spans_are_listed_left_to_right() {
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = canvas_buffer();
+        let reserved = [Rect::new(4, 0, 6, 10), Rect::new(12, 0, 2, 10)];
+        let canvas = Canvas::new(&mut buf, area, &reserved);
+        assert_eq!(canvas.free_spans(), [(0, 4), (10, 2), (14, 6)]);
+
+        // A region covering only some rows still takes its columns.
+        let short = [Rect::new(4, 2, 6, 3)];
+        let canvas = Canvas::new(&mut buf, area, &short);
+        assert_eq!(canvas.free_spans(), [(0, 4), (10, 10)]);
 
         let canvas = Canvas::new(&mut buf, area, &[]);
-        assert_eq!(canvas.widest_free_span(0), (0, 20), "all of it, unreserved");
-
-        // Rows 2..5 of columns 4..10 are taken: over the whole height that
-        // takes the columns, but from row 5 down they are free again.
-        let reserved = [Rect::new(4, 2, 6, 3)];
-        let canvas = Canvas::new(&mut buf, area, &reserved);
-        assert_eq!(canvas.widest_free_span(0), (10, 10));
-        assert_eq!(canvas.widest_free_span(5), (0, 20));
+        assert_eq!(canvas.free_spans(), [(0, 20)], "all of it, unreserved");
 
         let everything = [area];
         let canvas = Canvas::new(&mut buf, area, &everything);
-        assert_eq!(canvas.widest_free_span(0).1, 0);
+        assert!(canvas.free_spans().is_empty());
     }
 
     /// Every background, animated or not, across the sizes a terminal might be
@@ -551,6 +604,29 @@ mod tests {
     }
 
     #[test]
+    fn mirrored_art_faces_the_other_way() {
+        assert_eq!(mirror(&["><>"]), ["<><"]);
+        assert_eq!(mirror(&["><(((('>"]), ["<'))))><"]);
+        // Padded before reversing, so short rows stay in their column.
+        assert_eq!(mirror(&[" __", "\\/ o\\"]), ["  __", "/o \\/"]);
+    }
+
+    /// Art sliding in from an edge is drawn from wherever it starts, with the
+    /// part off the canvas simply dropped.
+    #[test]
+    fn text_off_the_top_or_left_edge_is_clipped_not_lost() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = canvas_buffer();
+        let mut canvas = Canvas::new(&mut buf, area, &[]);
+        canvas.text(-2, 0, "abcd", Style::default());
+        canvas.text(0, -1, "hidden", Style::default());
+        assert_eq!(
+            rendered(&buf).lines().next().unwrap(),
+            format!("cd{}", " ".repeat(18))
+        );
+    }
+
+    #[test]
     fn the_signal_reflects_the_game_it_came_from() {
         use crate::game::{Game, Mode};
 
@@ -559,7 +635,6 @@ mod tests {
         history.record(4, false);
         history.record(2, true);
         let signal = PerformanceSignal::of(&game, &history);
-        assert_eq!(signal.level, 3);
         assert_eq!(
             signal.last_clear,
             ClearKind::Double,

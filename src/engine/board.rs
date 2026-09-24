@@ -21,8 +21,9 @@ pub struct Board {
 }
 
 impl Board {
-    /// `buffer_rows` hidden rows are added above the 20 visible rows. Modern mode
-    /// needs them to spawn pieces above the field; NES mode uses 0.
+    /// `buffer_rows` hidden rows are added above the 20 visible rows: modern mode
+    /// spawns pieces up there, and NES keeps two so a piece can rotate the
+    /// moment it appears.
     pub fn new(buffer_rows: usize) -> Self {
         let height = VISIBLE_HEIGHT + buffer_rows;
         Self {
@@ -39,10 +40,6 @@ impl Board {
 
     pub fn height(&self) -> usize {
         self.height
-    }
-
-    pub fn buffer_rows(&self) -> usize {
-        self.buffer_rows
     }
 
     /// First visible row index. Rows above this are the hidden spawn buffer.
@@ -79,9 +76,7 @@ impl Board {
 
     /// True if any of `cells` is out of bounds or lands on a filled cell.
     pub fn collides(&self, cells: &[(i32, i32)]) -> bool {
-        cells
-            .iter()
-            .any(|&(x, y)| !self.is_inside(x, y) || self.is_occupied(x, y))
+        cells.iter().any(|&(x, y)| self.is_blocked_or_wall(x, y))
     }
 
     /// Treats out-of-bounds as filled. Used by T-spin corner checks, where walls

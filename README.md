@@ -21,12 +21,12 @@ Done so far:
   frames-per-row gravity table, DAS charge/repeat with wall charge and
   carry-through-entry-delay, entry delay banding, the ROM's centre-out line-clear
   animation (17-20 frames, timed off the global frame counter) with the Tetris
-  flash, scoring and
-  level progression
+  flash, scoring and level progression
 - **Modern (Guideline) ruleset**: SRS with both wall-kick tables, 7-bag with a
-  one-to-six piece preview queue, hold, ghost piece, hard drop, 500ms lock delay with the 15-reset
-  cap, T-spin and mini detection including the fifth-kick promotion, and scoring
-  with back-to-back, combos and perfect clears, plus an optional line-clear delay
+  one-to-six piece preview queue, hold, ghost piece, hard drop, 500ms lock delay
+  with the 15-reset cap, T-spin and mini detection including the fifth-kick
+  promotion, and scoring with back-to-back, combos and perfect clears, plus an
+  optional line-clear delay
 - Fixed 60 Hz tick loop, rebindable gameplay and menu keys, Kitty keyboard-protocol
   detection with a timeout fallback
 - Board and HUD rendering at two terminal columns per cell, transparency-safe
@@ -38,8 +38,8 @@ Done so far:
   Unicode or colour support
 - Background layer: blank (keeps terminal transparency), bundled scenes, your
   distribution's logo tiled behind the field, and the animated matrix rain,
-  pipes, nyancat, bonsai, aquarium and locomotive, and a cow that comments on
-  your play. It runs on the title screen too, as attract mode
+  pipes, nyancat, bonsai, aquarium and locomotive, and two cows that comment
+  on your play. It runs on the title screen too, as attract mode
 
 ## Running
 
@@ -78,10 +78,6 @@ nix develop -c cargo build --release      # target/release/tetris-tui
 Either way it is a single binary of about 1.5 MB with no runtime dependencies.
 A flake build only sees files git tracks, so a file added since the last commit
 needs a `git add` before `nix build` will find it.
-
-The default build has no audio code or audio dependencies at all. The `audio`
-Cargo feature is reserved for the optional music and sound phase (`brief.md`
-§12) and does nothing yet.
 
 ## Screens
 
@@ -122,7 +118,8 @@ menu keys and the reset:
   NES always uses its own 17-20 frame animation
 - **Colour theme** — `Guideline` is the published piece palette in 24-bit colour;
   `System ANSI` uses the terminal's own 16 colours, which is the one to pick on a
-  terminal without truecolor
+  terminal without truecolor. The title logo is a rainbow of the theme's piece
+  colours, rolling slowly down it
 - **Tetromino skin** — `Solid`, `Shaded`, `ASCII` (`[]` per cell) or
   `Letters` (the piece's own letter, which identifies pieces without colour)
 - **Board border** — `None`, `ASCII`, `Single`, `Double`, `Rounded` or `Heavy`,
@@ -135,16 +132,26 @@ menu keys and the reset:
   - `Distro logo` — your distribution's logo, read from `/etc/os-release`, a few
     copies scattered at random like polka dots. The logos are fastfetch's small
     ones, in fastfetch's colours. NixOS's uses block characters, so with an ASCII
-    option picked it falls back to fastfetch's older line-art NixOS logo
+    option picked it falls back to fastfetch's older line-art NixOS logo.
+    During a Tetris's line-clear delay the logos flash a rainbow that runs down
+    them, bright even when dimmed is on. NES always has a clear delay; modern
+    only flashes with a line clear delay set, since an instant clear has none
   - `Matrix rain` — cmatrix's falling columns
   - `Pipes` — pipes.sh, drawn in the board's border style
   - `Nyancat` — an occasional visitor, its rainbow in the theme's colours
-  - `Bonsai` — grown by cbonsai's rules in the widest free margin
+  - `Bonsai` — two trees grown by cbonsai's rules, one centred in each margin
+    beside the board, each replanted on its own
   - `Aquarium` — asciiquarium's fish, bubbles and seaweed
-  - `Cowsay` — reacts to the run: celebrates a Tetris or T-spin clear, cheers a
-    combo, gets smug on back-to-back and nervous as the stack nears the top
-  - `Locomotive` — sl's steam train every so often, and always one when a run
-    tops out
+  - `Cowsay` — two cows, one either side of the board and both facing it, each
+    saying something different. They react to the run: celebrate a Tetris or
+    T-spin clear, cheer a combo, get smug on back-to-back and nervous as the
+    stack nears the top. A cow needs a 20-column margin, which a full layout has
+    from 102 columns wide; a narrower margin is left empty rather than showing
+    part of a cow
+  - `Locomotive` — sl's own D51 steam locomotive and coal car, crossing one
+    way, pausing a moment, then coming back the other, at a new random height
+    each time. sl only runs right to left, so the way back is the art mirrored.
+    Topping out sends the next train at once
   - `dimmed` — on by default, and shown for every background but `Blank`: draws
     the background at reduced brightness so it stays behind the board
 - **Key bindings** — gameplay first, then the menu keys. `Enter` on a row, then
@@ -159,7 +166,7 @@ menu keys and the reset:
 
 | Path | Contents |
 |---|---|
-| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, next pieces, line clear delay, theme, skin, border, bold text, background and its dimming, gameplay and menu bindings |
+| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, next pieces, line clear delay, theme, skin, border, background and its dimming, gameplay and menu bindings |
 | `~/.local/share/tetris-tui/scores.toml` | two top-10 tables, NES and modern kept apart |
 
 Both are plain TOML and meant to be hand-editable, so a mistake costs only

@@ -1,8 +1,8 @@
 //! Tetromino identity and the in-play piece, shared by both rulesets.
 //!
-//! Cell offsets live in the per-mode rotation modules (`nes::rotation`, and SRS
-//! later) because the two systems disagree on both how many rotation states a
-//! piece has and where its pivot sits. `state` is just an index into whichever
+//! Cell offsets live in the per-mode rotation modules (`nes::rotation` and
+//! `modern::srs`) because the two systems disagree on both how many rotation
+//! states a piece has and where its pivot sits. `state` is just an index into whichever
 //! table the active mode owns.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -27,15 +27,17 @@ impl PieceKind {
         PieceKind::L,
     ];
 
-    pub fn letter(self) -> char {
+    /// A `&str` rather than a `char`, since the skins draw cells from string
+    /// glyphs and would otherwise allocate one per cell per frame.
+    pub fn letter(self) -> &'static str {
         match self {
-            PieceKind::I => 'I',
-            PieceKind::O => 'O',
-            PieceKind::T => 'T',
-            PieceKind::S => 'S',
-            PieceKind::Z => 'Z',
-            PieceKind::J => 'J',
-            PieceKind::L => 'L',
+            PieceKind::I => "I",
+            PieceKind::O => "O",
+            PieceKind::T => "T",
+            PieceKind::S => "S",
+            PieceKind::Z => "Z",
+            PieceKind::J => "J",
+            PieceKind::L => "L",
         }
     }
 }

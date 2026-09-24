@@ -29,11 +29,7 @@ impl Mode {
         }
     }
 
-    /// NES has no hard drop, no hold and no ghost piece.
-    pub fn has_hard_drop(self) -> bool {
-        self == Mode::Modern
-    }
-
+    /// NES has no hold slot, so its layout leaves that corner empty.
     pub fn has_hold(self) -> bool {
         self == Mode::Modern
     }

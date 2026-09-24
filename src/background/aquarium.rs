@@ -15,7 +15,7 @@ use rand::{Rng, SeedableRng};
 use ratatui::layout::Size;
 use ratatui::style::{Color, Modifier, Style};
 
-use super::{Background, Canvas, PerformanceSignal};
+use super::{mirror, Background, Canvas, PerformanceSignal};
 use crate::engine::piece::PieceKind;
 use crate::ui::style::Visuals;
 
@@ -58,38 +58,6 @@ const BUBBLE: [char; 3] = ['.', 'o', 'O'];
 const COLUMNS_PER_WEED: u16 = 12;
 /// Seconds per sway of the seaweed.
 const SWAY: f32 = 0.7;
-
-/// Mirror a sprite so it faces the other way: reverse each line, padded to the
-/// sprite's width so the rows stay aligned, and swap the characters that have a
-/// facing.
-fn mirror(sprite: &[&str]) -> Vec<String> {
-    let width = sprite_width(sprite);
-    sprite
-        .iter()
-        .map(|line| {
-            let padded = format!("{line:<width$}");
-            padded
-                .chars()
-                .rev()
-                .map(|ch| match ch {
-                    '<' => '>',
-                    '>' => '<',
-                    '(' => ')',
-                    ')' => '(',
-                    '[' => ']',
-                    ']' => '[',
-                    '{' => '}',
-                    '}' => '{',
-                    '/' => '\\',
-                    '\\' => '/',
-                    other => other,
-                })
-                .collect::<String>()
-                .trim_end()
-                .to_string()
-        })
-        .collect()
-}
 
 fn sprite_width<S: AsRef<str>>(sprite: &[S]) -> usize {
     sprite
@@ -368,18 +336,7 @@ impl Background for Aquarium {
             let style = Style::default()
                 .fg(visuals.theme.color(fish.colour))
                 .add_modifier(Modifier::DIM);
-            let left = fish.x.floor() as i32;
-            for (row, line) in self.sprite(fish).iter().enumerate() {
-                let y = fish.y + row as u16;
-                for (offset, ch) in line.chars().enumerate() {
-                    if ch == ' ' {
-                        continue;
-                    }
-                    if let Ok(x) = u16::try_from(left + offset as i32) {
-                        canvas.put(x, y, ch, style);
-                    }
-                }
-            }
+            canvas.block(fish.x.floor() as i32, fish.y, self.sprite(fish), style);
         }
     }
 
@@ -423,22 +380,17 @@ mod tests {
     }
 
     #[test]
-    fn a_mirrored_sprite_faces_the_other_way() {
-        assert_eq!(mirror(&["><>"]), ["<><"]);
-        assert_eq!(mirror(&["><(((('>"]), ["<'))))><"]);
-        // Padded before reversing, so short rows stay in their column.
-        assert_eq!(mirror(&[" __", "\\/ o\\"]), ["  __", "/o \\/"]);
-    }
-
-    #[test]
     fn every_sprite_keeps_its_shape_when_mirrored() {
         for sprite in FISH {
             let flipped = mirror(sprite);
             assert_eq!(flipped.len(), sprite.len());
             assert!(sprite_width(&flipped) <= sprite_width(sprite));
-            let back: Vec<&str> = flipped.iter().map(String::as_str).collect();
             let original: Vec<String> = sprite.iter().map(|l| l.trim_end().to_string()).collect();
-            assert_eq!(mirror(&back), original, "mirroring twice is the identity");
+            assert_eq!(
+                mirror(&flipped),
+                original,
+                "mirroring twice is the identity"
+            );
         }
     }
 

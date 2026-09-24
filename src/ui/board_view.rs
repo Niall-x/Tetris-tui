@@ -12,20 +12,12 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use crate::engine::board::Board;
 use crate::engine::piece::ActivePiece;
 use crate::game::Game;
 use crate::ui::style::{CellRole, Visuals};
 
 /// Terminal columns used per board cell.
 pub const CELL_WIDTH: u16 = 2;
-
-/// Terminal size needed to draw `board` including its border.
-pub fn required_size(board: &Board) -> (u16, u16) {
-    let width = board.width() as u16 * CELL_WIDTH + 2;
-    let height = (board.height() - board.buffer_rows()) as u16 + 2;
-    (width, height)
-}
 
 fn paint_cell(buf: &mut Buffer, area: Rect, col: u16, row: u16, glyphs: [&str; 2], style: Style) {
     for (i, glyph) in glyphs.iter().enumerate() {
@@ -122,23 +114,10 @@ fn paint_piece(
         );
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn required_size_accounts_for_double_width_cells_and_border() {
-        let board = Board::new(0);
-        assert_eq!(required_size(&board), (22, 22));
-    }
-
-    #[test]
-    fn buffer_rows_are_not_counted_in_visible_height() {
-        let board = Board::new(20);
-        let (_, height) = required_size(&board);
-        assert_eq!(height, 22, "hidden spawn rows must not be drawn");
-    }
-
     use crate::engine::piece::PieceKind;
     use crate::game::{Game, Input, Mode};
     use crate::ui::style::{Skin, Theme};

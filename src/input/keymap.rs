@@ -19,7 +19,7 @@ fn normalize(code: KeyCode) -> KeyCode {
 
 #[derive(Debug, Clone)]
 pub struct Keymap {
-    bindings: HashMap<(KeyCode, KeyModifiers), Action>,
+    bindings: HashMap<KeyCode, Action>,
 }
 
 impl Keymap {
@@ -29,18 +29,15 @@ impl Keymap {
         }
     }
 
-    pub fn bind(&mut self, code: KeyCode, modifiers: KeyModifiers, action: Action) {
-        self.bindings.insert((normalize(code), modifiers), action);
+    pub fn bind(&mut self, code: KeyCode, action: Action) {
+        self.bindings.insert(normalize(code), action);
     }
 
+    /// The action a key performs. Modifiers are ignored: no binding is a
+    /// chord, and some terminals report Shift alongside every capital. Ctrl-C
+    /// never gets this far; the app takes it as quit first.
     pub fn action_for(&self, event: &KeyEvent) -> Option<Action> {
-        let code = normalize(event.code);
-        self.bindings
-            .get(&(code, event.modifiers))
-            .copied()
-            // Shift is reported alongside uppercase letters on some terminals;
-            // fall back to an unmodified lookup rather than losing the binding.
-            .or_else(|| self.bindings.get(&(code, KeyModifiers::NONE)).copied())
+        self.bindings.get(&normalize(event.code)).copied()
     }
 
     /// Every key currently bound to `action`, for display in a rebinding UI.
@@ -48,7 +45,7 @@ impl Keymap {
         self.bindings
             .iter()
             .filter(|(_, &a)| a == action)
-            .map(|(&(code, _), _)| code)
+            .map(|(&code, _)| code)
             .collect()
     }
 }
@@ -56,27 +53,26 @@ impl Keymap {
 impl Default for Keymap {
     fn default() -> Self {
         let mut map = Self::empty();
-        let none = KeyModifiers::NONE;
 
         // WASD, with the arrows mirroring it for the other hand.
-        map.bind(KeyCode::Char('a'), none, Action::MoveLeft);
-        map.bind(KeyCode::Left, none, Action::MoveLeft);
-        map.bind(KeyCode::Char('d'), none, Action::MoveRight);
-        map.bind(KeyCode::Right, none, Action::MoveRight);
-        map.bind(KeyCode::Char('s'), none, Action::SoftDrop);
-        map.bind(KeyCode::Down, none, Action::SoftDrop);
-        map.bind(KeyCode::Char('w'), none, Action::HardDrop);
-        map.bind(KeyCode::Up, none, Action::HardDrop);
+        map.bind(KeyCode::Char('a'), Action::MoveLeft);
+        map.bind(KeyCode::Left, Action::MoveLeft);
+        map.bind(KeyCode::Char('d'), Action::MoveRight);
+        map.bind(KeyCode::Right, Action::MoveRight);
+        map.bind(KeyCode::Char('s'), Action::SoftDrop);
+        map.bind(KeyCode::Down, Action::SoftDrop);
+        map.bind(KeyCode::Char('w'), Action::HardDrop);
+        map.bind(KeyCode::Up, Action::HardDrop);
 
         // The NES pad's B and A, in pad order under the right hand.
-        map.bind(KeyCode::Char('j'), none, Action::RotateCcw);
-        map.bind(KeyCode::Char('k'), none, Action::RotateCw);
+        map.bind(KeyCode::Char('j'), Action::RotateCcw);
+        map.bind(KeyCode::Char('k'), Action::RotateCw);
 
-        map.bind(KeyCode::Char(' '), none, Action::Hold);
+        map.bind(KeyCode::Char(' '), Action::Hold);
 
-        map.bind(KeyCode::Char('p'), none, Action::Pause);
-        map.bind(KeyCode::Esc, none, Action::Pause);
-        map.bind(KeyCode::Char('q'), none, Action::Quit);
+        map.bind(KeyCode::Char('p'), Action::Pause);
+        map.bind(KeyCode::Esc, Action::Pause);
+        map.bind(KeyCode::Char('q'), Action::Quit);
 
         map
     }
@@ -283,7 +279,7 @@ mod tests {
     #[test]
     fn rebinding_replaces_the_previous_action_for_that_key() {
         let mut map = Keymap::default();
-        map.bind(KeyCode::Char('a'), KeyModifiers::NONE, Action::RotateCcw);
+        map.bind(KeyCode::Char('a'), Action::RotateCcw);
         assert_eq!(
             map.action_for(&key(KeyCode::Char('a'))),
             Some(Action::RotateCcw)

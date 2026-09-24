@@ -1,12 +1,23 @@
-//! Locomotive (§8, #9): sl's steam train, chugging across now and then.
+//! Locomotive (§8, #9): sl's D51 steam locomotive, back and forth.
 //!
-//! Like sl it runs right to left along the bottom of the screen, wheels turning
-//! and smoke rising from the chimney, and then the screen is quiet again until
-//! the next one. It is also the game-over easter egg the brief asks for:
-//! topping out sends a train through straight away.
+//! The train is sl's own: its D51 and coal car, and its six-frame wheel and
+//! rod animation, stepping a frame for every column moved at sl's pace. It
+//! crosses the screen, the line is quiet for a moment, and it comes back the
+//! other way, at a new random height each crossing. sl only ever runs right to
+//! left, so for the way back the art is mirrored and the train faces the way
+//! it is going.
 //!
-//! The train is our own art rather than sl's D51, as with every other
-//! background here.
+//! Topping out is the game-over easter egg the brief asks for: it cuts a pause
+//! short and sends the next train through at once.
+//!
+//! The D51 art is from sl (<https://github.com/mtoyoda/sl>), under its licence:
+//!
+//! > Copyright 1993,1998,2014 Toyoda Masashi (mtoyoda@acm.org)
+//! >
+//! > Everyone is permitted to do anything on this program including copying,
+//! > modifying, and improving, unless you try to pretend that you wrote it.
+//! > i.e., the above copyright notice has to appear in all copies.
+//! > THE AUTHOR DISCLAIMS ANY RESPONSIBILITY WITH REGARD TO THIS SOFTWARE.
 
 use std::time::Duration;
 
@@ -15,17 +26,15 @@ use rand::{Rng, SeedableRng};
 use ratatui::layout::Size;
 use ratatui::style::{Color, Modifier, Style};
 
-use super::{Background, Canvas, PerformanceSignal};
+use super::{mirror, Background, Canvas, PerformanceSignal};
 use crate::ui::style::Visuals;
 
-/// Columns per second; sl's own pace is about this.
-const SPEED: f32 = 24.0;
+/// Columns per second: sl moves one column every 40ms.
+const SPEED: f32 = 25.0;
 /// Seconds to the first train, short so picking this background shows one.
 const FIRST_TRAIN: f32 = 2.0;
-/// Seconds between trains after that.
-const BETWEEN: (f32, f32) = (20.0, 45.0);
-/// Seconds per quarter turn of the wheels.
-const WHEEL_TURN: f32 = 0.08;
+/// Seconds the line is quiet between a crossing and the next one back.
+const PAUSE: (f32, f32) = (1.0, 2.5);
 /// Seconds between puffs of smoke.
 const PUFF_EVERY: f32 = 0.2;
 /// Rows per second smoke rises, and columns per second it drifts back.
@@ -35,56 +44,101 @@ const SMOKE_DRIFT: f32 = 4.0;
 const PUFF: [&str; 5] = [".", "o", "O", "( )", "(   )"];
 const PUFF_STAGE: f32 = 0.35;
 
-/// Rows of each vehicle, top to bottom; `{w}` is a wheel's spoke. The engine
-/// leads, chimney at the front.
-const ENGINE: [&str; 7] = [
-    "   ___                      ",
-    "   | |           _________  ",
-    " __|_|__________|  _   _  | ",
-    "|  ___________  | |_| |_| | ",
-    "| |___________| |_________| ",
-    "|__________________________|",
-    "  ({w})=({w})=({w})        ({w})    ",
+/// sl's `D51STR1` to `D51STR7`: the engine above its wheels, the same in
+/// every frame.
+const D51_BODY: [&str; 7] = [
+    "      ====        ________                ___________ ",
+    "  _D _|  |_______/        \\__I_I_____===__|_________| ",
+    "   |(_)---  |   H\\________/ |   |        =|___ ___|   ",
+    "   /     |  |   H  |  |     |   |         ||_| |_||   ",
+    "  |      |  |   H  |__--------------------| [___] |   ",
+    "  | ________|___H__/__|_____/[][]~\\_______|       |   ",
+    "  |/ |   |-----------I_____I [][] []  D   |=======|__ ",
 ];
-const TENDER: [&str; 7] = [
-    "              ",
-    "              ",
-    " /\\/\\/\\/\\/\\/\\ ",
-    "|____________|",
-    "|            |",
-    "|____________|",
-    "  ({w})    ({w})  ",
+/// sl's `D51WHL11` to `D51WHL63`: the wheels and coupling rods in each of
+/// their six positions.
+const D51_WHEELS: [[&str; 3]; 6] = [
+    [
+        "__/ =| o |=-~~\\  /~~\\  /~~\\  /~~\\ ____Y___________|__ ",
+        " |/-=|___|=    ||    ||    ||    |_____/~\\___/        ",
+        "  \\_/      \\O=====O=====O=====O_/      \\_/            ",
+    ],
+    [
+        "__/ =| o |=-~~\\  /~~\\  /~~\\  /~~\\ ____Y___________|__ ",
+        " |/-=|___|=O=====O=====O=====O   |_____/~\\___/        ",
+        "  \\_/      \\__/  \\__/  \\__/  \\__/      \\_/            ",
+    ],
+    [
+        "__/ =| o |=-O=====O=====O=====O \\ ____Y___________|__ ",
+        " |/-=|___|=    ||    ||    ||    |_____/~\\___/        ",
+        "  \\_/      \\__/  \\__/  \\__/  \\__/      \\_/            ",
+    ],
+    [
+        "__/ =| o |=-~O=====O=====O=====O\\ ____Y___________|__ ",
+        " |/-=|___|=    ||    ||    ||    |_____/~\\___/        ",
+        "  \\_/      \\__/  \\__/  \\__/  \\__/      \\_/            ",
+    ],
+    [
+        "__/ =| o |=-~~\\  /~~\\  /~~\\  /~~\\ ____Y___________|__ ",
+        " |/-=|___|=   O=====O=====O=====O|_____/~\\___/        ",
+        "  \\_/      \\__/  \\__/  \\__/  \\__/      \\_/            ",
+    ],
+    [
+        "__/ =| o |=-~~\\  /~~\\  /~~\\  /~~\\ ____Y___________|__ ",
+        " |/-=|___|=    ||    ||    ||    |_____/~\\___/        ",
+        "  \\_/      \\_O=====O=====O=====O/      \\_/            ",
+    ],
 ];
-const CARRIAGE: [&str; 7] = [
-    "                    ",
-    " __________________ ",
-    "|  __  __  __  __  |",
-    "| |__||__||__||__| |",
-    "|                  |",
-    "|__________________|",
-    "   ({w})        ({w})   ",
+/// sl's `COAL01` to `COAL10`: the coal car, coupled on at `COAL_AT`.
+const COAL: [&str; 10] = [
+    "                              ",
+    "                              ",
+    "    _________________         ",
+    "   _|                \\_____A  ",
+    " =|                        |  ",
+    " -|                        |  ",
+    "__|________________________|_ ",
+    "|__________________________|_ ",
+    "   |_D__D__D_|  |_D__D__D_|   ",
+    "    \\_/   \\_/    \\_/   \\_/    ",
 ];
-/// The row the couplings sit on.
-const COUPLING_ROW: usize = 5;
-/// Where the chimney is, from the train's left edge.
-const CHIMNEY: f32 = 4.0;
-/// Turning right to left, the wheels go anticlockwise.
-const SPOKES: [&str; 4] = ["|", "\\", "-", "/"];
+/// sl draws the coal car this far along from the engine's front.
+const COAL_AT: usize = 53;
+/// sl's `D51LENGTH` and `D51HEIGHT`: the whole train, engine and coal car.
+const LENGTH: usize = 83;
+const HEIGHT: usize = 10;
+/// sl's `D51FUNNEL`: the funnel's column, from the engine's front.
+const FUNNEL: usize = 7;
 
-/// The whole train for one wheel position: engine, tender and two carriages
-/// coupled together.
-fn train(spoke: &str) -> Vec<String> {
-    let vehicles: [&[&str; 7]; 4] = [&ENGINE, &TENDER, &CARRIAGE, &CARRIAGE];
-    (0..ENGINE.len())
-        .map(|row| {
-            let coupling = if row == COUPLING_ROW { "=" } else { " " };
-            vehicles
-                .iter()
-                .map(|vehicle| vehicle[row].replace("{w}", spoke))
-                .collect::<Vec<_>>()
-                .join(coupling)
+/// The whole train in wheel position `frame`, facing left as sl draws it.
+fn train(frame: usize) -> Vec<String> {
+    D51_BODY
+        .iter()
+        .chain(&D51_WHEELS[frame])
+        .zip(COAL)
+        .map(|(engine, coal)| {
+            let mut row: String = engine.chars().take(COAL_AT).collect();
+            row.push_str(coal);
+            row
         })
         .collect()
+}
+
+/// Which way a train is going.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Heading {
+    /// sl's way, right to left.
+    Left,
+    Right,
+}
+
+impl Heading {
+    fn reversed(self) -> Self {
+        match self {
+            Heading::Left => Heading::Right,
+            Heading::Right => Heading::Left,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -92,9 +146,11 @@ enum Run {
     Waiting {
         remaining: f32,
     },
-    /// `x` is the engine's front.
+    /// `x` is the train's left edge and `top` its top row.
     Crossing {
         x: f32,
+        top: u16,
+        heading: Heading,
     },
 }
 
@@ -103,17 +159,22 @@ struct Puff {
     x: f32,
     y: f32,
     age: f32,
+    /// Columns per second, back along the line the train came from.
+    drift: f32,
 }
 
 pub struct Locomotive {
     rng: SmallRng,
     size: Size,
     run: Run,
-    /// The train at each wheel position, built once.
-    frames: Vec<Vec<String>>,
-    width: f32,
+    /// Which way the next train goes.
+    next: Heading,
+    /// The row the last train ran at, so the next runs somewhere else.
+    last_top: Option<u16>,
+    /// Every wheel frame, facing left and facing right, built once.
+    facing_left: Vec<Vec<String>>,
+    facing_right: Vec<Vec<String>>,
     smoke: Vec<Puff>,
-    wheel_clock: f32,
     puff_clock: f32,
     /// Whether the last signal was a game over, so topping out sends one
     /// train rather than one per tick.
@@ -131,41 +192,62 @@ impl Locomotive {
     }
 
     fn with_rng(rng: SmallRng) -> Self {
-        let frames: Vec<Vec<String>> = SPOKES.iter().map(|spoke| train(spoke)).collect();
-        let width = frames[0]
-            .iter()
-            .map(|row| row.chars().count())
-            .max()
-            .unwrap_or(0) as f32;
+        let facing_left: Vec<Vec<String>> = (0..D51_WHEELS.len()).map(train).collect();
+        let facing_right = facing_left.iter().map(|frame| mirror(frame)).collect();
         Self {
             rng,
             size: Size::new(0, 0),
             run: Run::Waiting {
                 remaining: FIRST_TRAIN,
             },
-            frames,
-            width,
+            next: Heading::Left,
+            last_top: None,
+            facing_left,
+            facing_right,
             smoke: Vec::new(),
-            wheel_clock: 0.0,
             puff_clock: 0.0,
             was_over: false,
         }
     }
 
     fn depart(&mut self) {
-        self.run = Run::Crossing {
-            x: f32::from(self.size.width),
+        let heading = self.next;
+        self.next = heading.reversed();
+        let top = self.pick_top();
+        let x = match heading {
+            Heading::Left => f32::from(self.size.width),
+            Heading::Right => -(LENGTH as f32),
         };
+        self.run = Run::Crossing { x, top, heading };
     }
 
-    /// The train's top row: it runs along the bottom of the screen.
-    fn top(&self) -> f32 {
-        f32::from(self.size.height) - ENGINE.len() as f32
+    /// A random row for the next train, never the last one's while the screen
+    /// has room for another.
+    fn pick_top(&mut self) -> u16 {
+        let lowest = self.size.height.saturating_sub(HEIGHT as u16);
+        let top = loop {
+            let top = self.rng.gen_range(0..=lowest);
+            if lowest == 0 || Some(top) != self.last_top {
+                break top;
+            }
+        };
+        self.last_top = Some(top);
+        top
     }
 
-    fn frame(&self) -> &[String] {
-        let turn = (self.wheel_clock / WHEEL_TURN) as usize;
-        &self.frames[turn % self.frames.len()]
+    /// The train as it looks at left edge `left`. sl picks the wheel frame by
+    /// column, one step back for every column the train moves; mirrored, the
+    /// same steps run as it moves right.
+    fn frame(&self, left: i32, heading: Heading) -> &[String] {
+        let frames = D51_WHEELS.len() as i32;
+        let (all, index) = match heading {
+            Heading::Left => (&self.facing_left, (LENGTH as i32 + left).rem_euclid(frames)),
+            Heading::Right => (
+                &self.facing_right,
+                (LENGTH as i32 - left).rem_euclid(frames),
+            ),
+        };
+        &all[index as usize]
     }
 }
 
@@ -180,8 +262,8 @@ impl Background for Locomotive {
         self.size = size;
         let dt = dt.as_secs_f32();
 
-        // The easter egg: a run ending sends a train, unless one is already on
-        // its way.
+        // The easter egg: a run ending sends the next train now, unless one is
+        // already on its way.
         if signal.game_over && !self.was_over && matches!(self.run, Run::Waiting { .. }) {
             self.depart();
         }
@@ -194,24 +276,31 @@ impl Background for Locomotive {
                     remaining: remaining - dt,
                 }
             }
-            Run::Crossing { x } => {
-                let x = x - SPEED * dt;
-                self.wheel_clock += dt;
+            Run::Crossing { x, top, heading } => {
+                let (x, funnel, drift) = match heading {
+                    Heading::Left => (x - SPEED * dt, FUNNEL, SMOKE_DRIFT),
+                    Heading::Right => (x + SPEED * dt, LENGTH - 1 - FUNNEL, -SMOKE_DRIFT),
+                };
                 self.puff_clock += dt;
                 if self.puff_clock >= PUFF_EVERY {
                     self.puff_clock -= PUFF_EVERY;
                     self.smoke.push(Puff {
-                        x: x + CHIMNEY,
-                        y: self.top() - 1.0,
+                        x: x + funnel as f32,
+                        y: f32::from(top) - 1.0,
                         age: 0.0,
+                        drift,
                     });
                 }
-                self.run = if x + self.width < 0.0 {
+                let gone = match heading {
+                    Heading::Left => x + (LENGTH as f32) < 0.0,
+                    Heading::Right => x > f32::from(size.width),
+                };
+                self.run = if gone {
                     Run::Waiting {
-                        remaining: self.rng.gen_range(BETWEEN.0..BETWEEN.1),
+                        remaining: self.rng.gen_range(PAUSE.0..PAUSE.1),
                     }
                 } else {
-                    Run::Crossing { x }
+                    Run::Crossing { x, top, heading }
                 };
             }
         }
@@ -220,7 +309,7 @@ impl Background for Locomotive {
         for puff in &mut self.smoke {
             puff.age += dt;
             puff.y -= SMOKE_RISE * dt;
-            puff.x += SMOKE_DRIFT * dt;
+            puff.x += puff.drift * dt;
         }
         let lifetime = PUFF.len() as f32 * PUFF_STAGE;
         self.smoke
@@ -234,38 +323,21 @@ impl Background for Locomotive {
             let glyphs = PUFF[stage];
             // Centred on the puff, so it spreads as it grows.
             let left = puff.x.floor() as i32 - glyphs.chars().count() as i32 / 2;
-            text(canvas, left, puff.y.floor() as i32, glyphs, smoke);
+            canvas.text(left, puff.y.floor() as i32, glyphs, smoke);
         }
 
-        let Run::Crossing { x } = self.run else {
+        let Run::Crossing { x, top, heading } = self.run else {
             return;
         };
         let body = Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::DIM);
-        let top = self.top().floor() as i32;
         let left = x.floor() as i32;
-        for (row, line) in self.frame().iter().enumerate() {
-            text(canvas, left, top + row as i32, line, body);
-        }
+        canvas.block(left, top, self.frame(left, heading), body);
     }
 
     fn name(&self) -> &'static str {
         "Locomotive"
-    }
-}
-
-/// Like [`Canvas::text`], but for a line that may start off the left or top
-/// edge, as the train does for most of its run.
-fn text(canvas: &mut Canvas, x: i32, y: i32, line: &str, style: Style) {
-    let Ok(y) = u16::try_from(y) else { return };
-    for (offset, ch) in line.chars().enumerate() {
-        if ch == ' ' {
-            continue;
-        }
-        if let Ok(x) = u16::try_from(x + offset as i32) {
-            canvas.put(x, y, ch, style);
-        }
     }
 }
 
@@ -276,12 +348,26 @@ mod tests {
     use ratatui::layout::Rect;
 
     const TICK: Duration = Duration::from_nanos(16_666_667);
-    const SIZE: Size = Size::new(100, 24);
+    const SIZE: Size = Size::new(100, 30);
 
     fn run(loco: &mut Locomotive, seconds: f32, signal: &PerformanceSignal) {
         for _ in 0..(seconds * 60.0) as usize {
             loco.tick(TICK, SIZE, signal);
         }
+    }
+
+    /// Tick until the current state changes kind: from a crossing to a pause
+    /// or back. Returns false if it never did.
+    fn run_until_change(loco: &mut Locomotive) -> bool {
+        let calm = PerformanceSignal::default();
+        let crossing = matches!(loco.run, Run::Crossing { .. });
+        for _ in 0..60 * 30 {
+            loco.tick(TICK, SIZE, &calm);
+            if matches!(loco.run, Run::Crossing { .. }) != crossing {
+                return true;
+            }
+        }
+        false
     }
 
     fn as_string(loco: &Locomotive) -> String {
@@ -303,68 +389,117 @@ mod tests {
         out
     }
 
-    /// Every row of every vehicle is the vehicle's width, or the couplings and
-    /// the next vehicle along would come out crooked.
+    /// sl's own dimensions: `D51LENGTH` by `D51HEIGHT`, every row and every
+    /// wheel frame, or the coal car and the rods would come out crooked.
     #[test]
-    fn every_vehicle_is_a_clean_rectangle() {
-        for vehicle in [&ENGINE, &TENDER, &CARRIAGE] {
-            let widths: Vec<usize> = vehicle
-                .iter()
-                .map(|row| row.replace("{w}", "|").chars().count())
-                .collect();
-            assert!(
-                widths.windows(2).all(|pair| pair[0] == pair[1]),
-                "{widths:?}"
-            );
+    fn the_train_is_sls_d51_and_coal_car() {
+        assert_eq!(D51_WHEELS.len(), 6, "sl's D51PATTERNS");
+        for frame in 0..D51_WHEELS.len() {
+            let rows = train(frame);
+            assert_eq!(rows.len(), HEIGHT);
+            for row in &rows {
+                assert_eq!(row.chars().count(), LENGTH, "{row:?}");
+            }
         }
-        let rows = train("|");
-        assert!(rows.windows(2).all(|pair| pair[0].len() == pair[1].len()));
+        // The funnel sl puffs smoke from.
+        assert_eq!(&train(0)[0][FUNNEL - 1..FUNNEL + 3], "====");
     }
 
     #[test]
-    fn the_first_train_comes_soon_and_runs_right_to_left() {
+    fn the_mirrored_train_faces_right() {
+        let facing_right = mirror(&train(0));
+        // The funnel, at the engine's front, is now on the right.
+        assert!(facing_right[0].ends_with("===="));
+        // Mirrored rows keep their columns: every one still ends where the
+        // left-facing row began, so the train stays in one piece.
+        for (left, right) in train(0).iter().zip(&facing_right) {
+            let lead = left.len() - left.trim_start().len();
+            assert_eq!(right.len(), LENGTH - lead, "{right:?}");
+        }
+    }
+
+    #[test]
+    fn the_first_train_comes_soon_and_runs_sls_way() {
         let mut loco = Locomotive::seeded(1);
         let calm = PerformanceSignal::default();
         run(&mut loco, FIRST_TRAIN + 0.1, &calm);
-        let Run::Crossing { x: start } = loco.run else {
+        let Run::Crossing {
+            x: start, heading, ..
+        } = loco.run
+        else {
             panic!("no train after {FIRST_TRAIN}s");
         };
+        assert_eq!(heading, Heading::Left);
         run(&mut loco, 1.0, &calm);
-        let Run::Crossing { x } = loco.run else {
+        let Run::Crossing { x, .. } = loco.run else {
             panic!("the train vanished mid-crossing");
         };
         assert!(x < start, "it went the wrong way");
 
         let rendered = as_string(&loco);
         println!("{rendered}");
-        let rows: Vec<&str> = rendered.lines().collect();
-        assert!(
-            rows[SIZE.height as usize - 1].contains('('),
-            "wheels on the bottom row"
-        );
+        assert!(rendered.contains("===="), "the funnel is on screen");
     }
 
+    /// Across, a short pause, back the other way, and never at the height it
+    /// last ran.
     #[test]
-    fn a_crossing_ends_and_the_line_goes_quiet_until_the_next() {
+    fn trains_go_back_and_forth_each_at_a_new_height() {
         let mut loco = Locomotive::seeded(2);
-        let calm = PerformanceSignal::default();
-        // Onto the screen, then all the way across: width plus train length.
-        let crossing = (f32::from(SIZE.width) + loco.width) / SPEED;
-        run(&mut loco, FIRST_TRAIN + crossing + 0.5, &calm);
-        assert!(matches!(loco.run, Run::Waiting { .. }));
-        let Run::Waiting { remaining } = loco.run else {
-            unreachable!()
-        };
-        assert!(remaining >= BETWEEN.0 - 1.0);
+        let mut last: Option<(Heading, u16)> = None;
+        for _ in 0..12 {
+            // Into the next crossing.
+            assert!(run_until_change(&mut loco), "no train came");
+            let Run::Crossing { heading, top, .. } = loco.run else {
+                unreachable!()
+            };
+            assert!(usize::from(top) + HEIGHT <= usize::from(SIZE.height));
+            if let Some((previous, previous_top)) = last {
+                assert_eq!(heading, previous.reversed(), "it did not turn back");
+                assert_ne!(top, previous_top, "the same height twice");
+            }
+            last = Some((heading, top));
+
+            // Off the far side, and a short pause.
+            assert!(run_until_change(&mut loco), "the train never left");
+            let Run::Waiting { remaining } = loco.run else {
+                unreachable!()
+            };
+            assert!((PAUSE.0..PAUSE.1).contains(&remaining), "{remaining}");
+        }
     }
 
-    /// The easter egg: a run ending sends a train at once, and only one.
     #[test]
-    fn topping_out_sends_a_train_through() {
+    fn a_right_bound_train_runs_the_mirrored_art_left_to_right() {
         let mut loco = Locomotive::seeded(3);
-        let calm = PerformanceSignal::default();
-        let crossing = (f32::from(SIZE.width) + loco.width) / SPEED;
-        run(&mut loco, FIRST_TRAIN + crossing + 0.5, &calm);
+        assert!(run_until_change(&mut loco));
+        assert!(run_until_change(&mut loco));
+        assert!(run_until_change(&mut loco));
+        let Run::Crossing {
+            x: start, heading, ..
+        } = loco.run
+        else {
+            panic!("no second train");
+        };
+        assert_eq!(heading, Heading::Right);
+        run(&mut loco, 4.0, &PerformanceSignal::default());
+        let Run::Crossing { x, .. } = loco.run else {
+            panic!("the train vanished mid-crossing");
+        };
+        assert!(x > start, "it went the wrong way");
+
+        let rendered = as_string(&loco);
+        println!("{rendered}");
+        // The coal car's front, mirrored, leads on the left.
+        assert!(rendered.contains("A_____/"), "the mirrored coal car");
+    }
+
+    /// The easter egg: topping out cuts the pause short, and only once.
+    #[test]
+    fn topping_out_sends_the_next_train_at_once() {
+        let mut loco = Locomotive::seeded(4);
+        assert!(run_until_change(&mut loco));
+        assert!(run_until_change(&mut loco));
         assert!(matches!(loco.run, Run::Waiting { .. }));
 
         let over = PerformanceSignal {
@@ -377,35 +512,48 @@ mod tests {
             "no train at game over"
         );
 
-        // Staying on the game-over screen must not send another after it.
-        run(&mut loco, crossing + 0.5, &over);
+        // Staying on the game-over screen must not cut the next pause short.
+        let crossing = (f32::from(SIZE.width) + LENGTH as f32) / SPEED;
+        run(&mut loco, crossing + 0.1, &over);
         assert!(matches!(loco.run, Run::Waiting { .. }));
-        run(&mut loco, 5.0, &over);
+        loco.tick(TICK, SIZE, &over);
         assert!(matches!(loco.run, Run::Waiting { .. }));
     }
 
     #[test]
-    fn smoke_rises_from_the_chimney_and_clears() {
-        let mut loco = Locomotive::seeded(4);
-        let calm = PerformanceSignal::default();
-        run(&mut loco, FIRST_TRAIN + 1.5, &calm);
-        assert!(!loco.smoke.is_empty(), "a moving train smokes");
-        for puff in &loco.smoke {
-            assert!(puff.y < loco.top(), "smoke below the chimney");
-        }
-
-        let crossing = (f32::from(SIZE.width) + loco.width) / SPEED;
-        run(&mut loco, crossing + PUFF.len() as f32 * PUFF_STAGE, &calm);
-        assert!(loco.smoke.is_empty(), "the smoke never cleared");
-    }
-
-    #[test]
-    fn the_wheels_turn_as_it_goes() {
+    fn smoke_rises_from_the_funnel_and_drifts_back() {
         let mut loco = Locomotive::seeded(5);
         let calm = PerformanceSignal::default();
-        run(&mut loco, FIRST_TRAIN + 0.5, &calm);
-        let first = loco.frame().last().unwrap().clone();
-        run(&mut loco, WHEEL_TURN * 1.5, &calm);
-        assert_ne!(loco.frame().last().unwrap(), &first);
+        run(&mut loco, FIRST_TRAIN + 1.5, &calm);
+        let Run::Crossing { top, .. } = loco.run else {
+            panic!("no train");
+        };
+        assert!(!loco.smoke.is_empty(), "a moving train smokes");
+        for puff in &loco.smoke {
+            assert!(puff.y < f32::from(top), "smoke below the funnel");
+            assert!(puff.drift > 0.0, "a left-bound train's smoke drifts right");
+        }
+
+        // Off the far side; by the time its last puff would have thinned out,
+        // none of its smoke is left, whatever the next train is doing.
+        assert!(run_until_change(&mut loco));
+        run(&mut loco, PUFF.len() as f32 * PUFF_STAGE, &calm);
+        assert!(
+            loco.smoke.iter().all(|puff| puff.drift < 0.0),
+            "the smoke never cleared"
+        );
+    }
+
+    /// sl steps the wheels a frame for every column the train moves.
+    #[test]
+    fn the_wheels_turn_a_frame_a_column() {
+        let loco = Locomotive::seeded(6);
+        for heading in [Heading::Left, Heading::Right] {
+            let frames: Vec<&[String]> = (0..6).map(|left| loco.frame(left, heading)).collect();
+            for pair in frames.windows(2) {
+                assert_ne!(pair[0], pair[1], "{heading:?}");
+            }
+            assert_eq!(loco.frame(0, heading), loco.frame(6, heading));
+        }
     }
 }

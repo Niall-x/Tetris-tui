@@ -101,7 +101,7 @@ pub fn render_stats(
 
     lines.extend(STATS_ORDER.iter().map(|&kind| {
         stat_row(
-            kind.letter().to_string(),
+            kind.letter().into(),
             Style::default().fg(visuals.theme.color(kind)),
             game.piece_count(kind).to_string(),
         )

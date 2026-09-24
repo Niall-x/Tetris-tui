@@ -1,4 +1,4 @@
-//! Bonsai (§8, #6): a tree grown branch by branch, cbonsai-style.
+//! Bonsai (§8, #6): two trees grown branch by branch, cbonsai-style.
 //!
 //! The growth rules are cbonsai's own — its trunk, shoot, dying and dead branch
 //! types, their movement dice and their glyphs — so the trees have that shape
@@ -6,9 +6,9 @@
 //! goes; here the recursion is an explicit stack, so the tree can grow a step
 //! per tick instead of all at once.
 //!
-//! A tall piece of art centred behind the board would be hidden by it, so the
-//! tree stands in the widest stretch of screen the board leaves free. Once grown
-//! it stays a while, then a new one is planted.
+//! A tall piece of art centred behind the board would be hidden by it, so one
+//! tree stands in each margin either side of it, each grown on its own. Once
+//! grown a tree stays a while, then a new one is planted in its place.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -35,8 +35,6 @@ const MAX_STEPS: u32 = 10_000;
 /// cbonsai's second base. The tree grows from the middle of its rim.
 const POT: [&str; 3] = ["(---./~~~\\.---)", " (           ) ", "  (_________)  "];
 const POT_CENTRE: u16 = 7;
-/// Rows above the pot that have to be clear for a spot to count as free.
-const STANDING_ROOM: u16 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -83,7 +81,7 @@ struct Cell {
     bright: bool,
 }
 
-pub struct Bonsai {
+struct Tree {
     rng: SmallRng,
     /// Branches still growing, innermost last — the recursion's call stack.
     growing: Vec<Branch>,
@@ -97,8 +95,8 @@ pub struct Bonsai {
     grown: f32,
 }
 
-impl Bonsai {
-    pub fn new() -> Self {
+impl Tree {
+    fn new() -> Self {
         Self::with_rng(SmallRng::from_entropy())
     }
 
@@ -108,7 +106,7 @@ impl Bonsai {
     }
 
     fn with_rng(rng: SmallRng) -> Self {
-        let mut bonsai = Self {
+        let mut tree = Self {
             rng,
             growing: Vec::new(),
             cells: HashMap::new(),
@@ -117,8 +115,8 @@ impl Bonsai {
             pending: 0.0,
             grown: 0.0,
         };
-        bonsai.plant();
-        bonsai
+        tree.plant();
+        tree
     }
 
     fn plant(&mut self) {
@@ -311,17 +309,11 @@ impl Bonsai {
     }
 }
 
-impl Default for Bonsai {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Background for Bonsai {
-    /// The tree is grown in its own coordinates, so the terminal's size only
-    /// matters when it is placed on screen.
-    fn tick(&mut self, dt: Duration, _size: Size, _signal: &PerformanceSignal) {
-        let dt = dt.as_secs_f32();
+impl Tree {
+    /// Grow for `dt` seconds, or stand, or replant once it has stood long
+    /// enough. The tree is grown in its own coordinates, so where it stands on
+    /// screen only matters when it is drawn.
+    fn advance(&mut self, dt: f32) {
         if self.is_growing() {
             self.pending += dt * STEPS_PER_SECOND;
             while self.pending >= 1.0 {
@@ -339,20 +331,14 @@ impl Background for Bonsai {
         }
     }
 
-    fn render(&self, canvas: &mut Canvas, _visuals: &Visuals, _signal: &PerformanceSignal) {
+    /// The pot, centred on column `centre` and standing on the bottom row, and
+    /// the tree growing out of it.
+    fn draw_at(&self, canvas: &mut Canvas, centre: u16) {
         let pot_height = POT.len() as u16;
         if canvas.height() <= pot_height {
             return;
         }
-        // Placed by the space free at the pot and the tree's lower half; the
-        // crown may reach up behind a panel, but the tree still reads.
         let pot_top = canvas.height() - pot_height;
-        let (start, width) = canvas.widest_free_span(pot_top.saturating_sub(STANDING_ROOM));
-        if width == 0 {
-            return;
-        }
-
-        let centre = start + width / 2;
         let root = (i32::from(centre), i32::from(pot_top) - 1);
 
         let pot_style = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
@@ -373,6 +359,69 @@ impl Background for Bonsai {
             canvas.put(x, y, cell.glyph, style);
         }
     }
+}
+
+/// Two trees, one either side of the board, each grown and replanted on its
+/// own.
+pub struct Bonsai {
+    /// The left tree, then the right.
+    trees: [Tree; 2],
+}
+
+impl Bonsai {
+    pub fn new() -> Self {
+        Self {
+            trees: [Tree::new(), Tree::new()],
+        }
+    }
+
+    #[cfg(test)]
+    fn seeded(seed: u64) -> Self {
+        Self {
+            trees: [Tree::seeded(seed), Tree::seeded(seed.wrapping_add(1))],
+        }
+    }
+}
+
+impl Default for Bonsai {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Background for Bonsai {
+    fn tick(&mut self, dt: Duration, _size: Size, _signal: &PerformanceSignal) {
+        for tree in &mut self.trees {
+            tree.advance(dt.as_secs_f32());
+        }
+    }
+
+    fn render(&self, canvas: &mut Canvas, _visuals: &Visuals, _signal: &PerformanceSignal) {
+        // Beside a board, the first and last free spans are the margins either
+        // side of it, and a tree stands in the middle of each. With nothing on
+        // screen there is one span, the whole width, and the trees stand a
+        // sixth of the way in from each edge, clear of the title menu. The
+        // crowns may reach up behind a panel, but a tree still reads.
+        let spans = canvas.free_spans();
+        // Each tree's centre column and the width it has to itself.
+        let stands = match spans.as_slice() {
+            [] => return,
+            [(start, width)] => [
+                (start + width / 6, width / 2),
+                (start + width - width / 6, width / 2),
+            ],
+            [first, .., last] => [
+                (first.0 + first.1 / 2, first.1),
+                (last.0 + last.1 / 2, last.1),
+            ],
+        };
+        for (tree, (centre, room)) in self.trees.iter().zip(stands) {
+            // A pot cut in half by the board reads as a mistake.
+            if usize::from(room) >= POT[0].len() {
+                tree.draw_at(canvas, centre);
+            }
+        }
+    }
 
     fn name(&self) -> &'static str {
         "Bonsai"
@@ -389,7 +438,9 @@ mod tests {
     const SIZE: Size = Size::new(80, 30);
 
     fn grow_fully(bonsai: &mut Bonsai) {
-        while bonsai.step() {}
+        for tree in &mut bonsai.trees {
+            while tree.step() {}
+        }
     }
 
     fn as_string(buf: &Buffer) -> String {
@@ -415,15 +466,23 @@ mod tests {
         buf
     }
 
+    /// The columns of the bottom row the pots are drawn in.
+    fn pot_columns(buf: &Buffer) -> Vec<u16> {
+        let bottom = buf.area.height - 1;
+        (0..buf.area.width)
+            .filter(|&x| buf[(x, bottom)].symbol() != " ")
+            .collect()
+    }
+
     #[test]
     fn a_tree_grows_a_step_at_a_time() {
-        let mut bonsai = Bonsai::seeded(1);
+        let mut tree = Tree::seeded(1);
         let mut sizes = Vec::new();
         for _ in 0..4 {
             for _ in 0..30 {
-                bonsai.tick(TICK, SIZE, &PerformanceSignal::default());
+                tree.advance(TICK.as_secs_f32());
             }
-            sizes.push(bonsai.cells.len());
+            sizes.push(tree.cells.len());
         }
         assert!(
             sizes.windows(2).all(|pair| pair[0] < pair[1]),
@@ -436,16 +495,16 @@ mod tests {
     #[test]
     fn every_tree_finishes_with_wood_and_leaves_above_the_ground() {
         for seed in 0..40 {
-            let mut bonsai = Bonsai::seeded(seed);
-            grow_fully(&mut bonsai);
-            assert!(!bonsai.is_growing());
-            assert!(bonsai.steps < MAX_STEPS, "seed {seed} hit the backstop");
+            let mut tree = Tree::seeded(seed);
+            while tree.step() {}
+            assert!(!tree.is_growing());
+            assert!(tree.steps < MAX_STEPS, "seed {seed} hit the backstop");
 
-            let parts: Vec<Part> = bonsai.cells.values().map(|cell| cell.part).collect();
+            let parts: Vec<Part> = tree.cells.values().map(|cell| cell.part).collect();
             assert!(parts.contains(&Part::Wood), "seed {seed}: no wood");
             assert!(parts.contains(&Part::Leaf), "seed {seed}: no leaves");
             assert!(
-                bonsai.cells.keys().all(|&(_, y)| y <= 0),
+                tree.cells.keys().all(|&(_, y)| y <= 0),
                 "seed {seed} grew below the root"
             );
         }
@@ -453,19 +512,36 @@ mod tests {
 
     #[test]
     fn a_grown_tree_stands_a_while_and_then_a_new_one_is_planted() {
-        let mut bonsai = Bonsai::seeded(2);
-        grow_fully(&mut bonsai);
-        let grown = bonsai.cells.len();
+        let mut tree = Tree::seeded(2);
+        while tree.step() {}
+        let grown = tree.cells.len();
 
         for _ in 0..60 {
-            bonsai.tick(TICK, SIZE, &PerformanceSignal::default());
+            tree.advance(TICK.as_secs_f32());
         }
-        assert_eq!(bonsai.cells.len(), grown, "still standing a second later");
+        assert_eq!(tree.cells.len(), grown, "still standing a second later");
 
         for _ in 0..(GROWN_FOR as usize * 60) {
+            tree.advance(TICK.as_secs_f32());
+        }
+        assert!(tree.cells.len() < grown, "replanted and growing again");
+    }
+
+    /// The two trees are grown apart, so they are not the same tree twice.
+    #[test]
+    fn both_trees_grow_and_each_is_its_own() {
+        let mut bonsai = Bonsai::seeded(6);
+        for _ in 0..(60 * 5) {
             bonsai.tick(TICK, SIZE, &PerformanceSignal::default());
         }
-        assert!(bonsai.cells.len() < grown, "replanted and growing again");
+        let [left, right] = &bonsai.trees;
+        assert!(!left.cells.is_empty() && !right.cells.is_empty());
+        let shape = |tree: &Tree| {
+            let mut cells: Vec<_> = tree.cells.keys().copied().collect();
+            cells.sort();
+            cells
+        };
+        assert_ne!(shape(left), shape(right));
     }
 
     #[test]
@@ -474,30 +550,41 @@ mod tests {
         grow_fully(&mut bonsai);
         let rendered = as_string(&draw(&bonsai, 80, 30, &[]));
         println!("{rendered}");
-        assert!(rendered.contains("(_________)"), "the pot");
+        assert_eq!(rendered.matches("(_________)").count(), 2, "two pots");
         assert!(rendered.contains('&'), "leaves");
     }
 
-    /// With the board in the middle, the tree belongs in whichever margin is
-    /// wider — centred behind the board it would never be seen.
+    /// With the board in the middle, a tree stands centred in each margin —
+    /// centred behind the board it would never be seen.
     #[test]
-    fn the_tree_stands_in_the_widest_free_margin() {
+    fn a_tree_stands_in_each_margin_beside_the_board() {
         let mut bonsai = Bonsai::seeded(4);
         grow_fully(&mut bonsai);
-        // Board on the left: 0..10 free, 40..100 free.
-        let board = Rect::new(10, 0, 30, 30);
-        let buf = draw(&bonsai, 100, 30, &[board]);
+        let board = Rect::new(40, 0, 40, 30);
+        let buf = draw(&bonsai, 120, 30, &[board]);
         println!("{}", as_string(&buf));
 
-        let pot_row = 29;
-        let pot: Vec<u16> = (0..100)
-            .filter(|&x| buf[(x, pot_row)].symbol() != " ")
-            .collect();
-        assert!(!pot.is_empty());
-        assert!(
-            pot.iter().all(|&x| x >= 40),
-            "pot drawn at {pot:?}, not in the right margin"
-        );
+        let pots = pot_columns(&buf);
+        let (left, right): (Vec<u16>, Vec<u16>) = pots.iter().partition(|&&x| x < 40);
+        assert!(!left.is_empty() && !right.is_empty(), "{pots:?}");
+        assert!(right.iter().all(|&x| x >= 80));
+        // Each pot centred in its 40-column margin.
+        let middle = |xs: &[u16]| (xs[0] + xs[xs.len() - 1]) / 2;
+        assert_eq!(middle(&left), 20);
+        assert_eq!(middle(&right), 100);
+    }
+
+    /// A pot cut in half by the board reads as a mistake, so a margin too
+    /// narrow for one gets no tree.
+    #[test]
+    fn a_margin_too_narrow_for_a_pot_gets_no_tree() {
+        let mut bonsai = Bonsai::seeded(7);
+        grow_fully(&mut bonsai);
+        let board = Rect::new(10, 0, 40, 30);
+        let buf = draw(&bonsai, 100, 30, &[board]);
+        let pots = pot_columns(&buf);
+        assert!(!pots.is_empty(), "the right margin has one");
+        assert!(pots.iter().all(|&x| x >= 50), "{pots:?}");
     }
 
     #[test]

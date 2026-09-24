@@ -1,7 +1,8 @@
 //! Cowsay mood (§8.1): the one background that reacts to how the run is going.
 //!
-//! A cow stands at the foot of the screen and comments. What it says, and its
-//! face, follow the performance signal — a celebration for a Tetris or a T-spin
+//! Two cows stand at the foot of the screen, one either side of the board and
+//! both facing it, and comment. What they say, and their faces, follow the
+//! performance signal — a celebration for a Tetris or a T-spin
 //! clear, encouragement through a combo, smugness on back-to-back, alarm when
 //! the stack nears the top, a last word at game over, and idle remarks
 //! otherwise.
@@ -9,7 +10,7 @@
 //! Signals can flip every frame, and a cow that changed its mind as often would
 //! just flicker, so a mood has to last a minimum time before another replaces
 //! it. The exceptions are a celebration and game over, which are events and
-//! land at once. The cow is authored here, not borrowed from `cowsay`.
+//! land at once. The cows are authored here, not borrowed from `cowsay`.
 
 use std::time::Duration;
 
@@ -34,16 +35,44 @@ const PANIC_AT: f32 = 0.8;
 const STREAK_AT: u32 = 3;
 /// Widest the speech bubble's text runs before wrapping.
 const BUBBLE_TEXT: usize = 28;
+/// Columns kept between a cow and the board it is watching.
+const GAP: u16 = 2;
 
-/// The cow, with `{e}` for its eyes and `{t}` for its tongue.
-const COW: [&str; 5] = [
-    "        \\   ^__^",
-    "         \\  ({e})\\_______",
-    "            (__)\\       )\\/\\",
-    "             {t}  ||----w |",
-    "                ||     ||",
+/// cowsay's cow, facing left, with `{e}` for its eyes and `{t}` for its
+/// tongue. It stands right of the board. cowsay indents it eight columns under
+/// the bubble; that is trimmed here so a narrow margin can still hold it.
+const COW_FACING_LEFT: [&str; 5] = [
+    "\\   ^__^",
+    " \\  ({e})\\_______",
+    "    (__)\\       )\\/\\",
+    "     {t}  ||----w |",
+    "        ||     ||",
 ];
-const COW_WIDTH: usize = 28;
+/// The same cow mirrored, for the left of the board. Its bubble's tail comes
+/// down from the right, over its head.
+const COW_FACING_RIGHT: [&str; 5] = [
+    "            ^__^   /",
+    "    _______/({e})  /",
+    "/\\/(       /(__)",
+    "   | w----||  {t}",
+    "   ||     ||",
+];
+const COW_WIDTH: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Facing {
+    Left,
+    Right,
+}
+
+impl Facing {
+    fn art(self) -> &'static [&'static str; 5] {
+        match self {
+            Facing::Left => &COW_FACING_LEFT,
+            Facing::Right => &COW_FACING_RIGHT,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mood {
@@ -147,7 +176,8 @@ impl Mood {
 pub struct Cow {
     rng: SmallRng,
     mood: Mood,
-    remark: String,
+    /// What each cow is saying: the left one, then the right.
+    remarks: [String; 2],
     /// Seconds in the current mood.
     held: f32,
     /// A celebration still running, and for how much longer.
@@ -171,7 +201,7 @@ impl Cow {
         let mut cow = Self {
             rng,
             mood: Mood::Idle,
-            remark: String::new(),
+            remarks: Default::default(),
             held: 0.0,
             celebrating: None,
             seen: 0,
@@ -180,17 +210,29 @@ impl Cow {
         cow
     }
 
-    /// Change mood and pick something to say, never the same remark twice in a
-    /// row when there is another to choose.
+    /// Change mood and give each cow something to say: never what that cow
+    /// said last, nor what the other one is saying, while there is another
+    /// remark to choose.
     fn switch(&mut self, mood: Mood, combo: u32) {
-        let remarks = mood.remarks();
-        let mut remark = remarks[self.rng.gen_range(0..remarks.len())];
-        if remarks.len() > 1 {
-            while remark.replace("{n}", &combo.to_string()) == self.remark {
-                remark = remarks[self.rng.gen_range(0..remarks.len())];
-            }
+        let all: Vec<String> = mood
+            .remarks()
+            .iter()
+            .map(|remark| remark.replace("{n}", &combo.to_string()))
+            .collect();
+        let mut picked: Vec<String> = Vec::with_capacity(2);
+        for cow in 0..2 {
+            let fresh: Vec<&String> = all
+                .iter()
+                .filter(|remark| **remark != self.remarks[cow] && !picked.contains(*remark))
+                .collect();
+            let pool: Vec<&String> = if fresh.is_empty() {
+                all.iter().collect()
+            } else {
+                fresh
+            };
+            picked.push(pool[self.rng.gen_range(0..pool.len())].clone());
         }
-        self.remark = remark.replace("{n}", &combo.to_string());
+        self.remarks = [picked.remove(0), picked.remove(0)];
         self.mood = mood;
         self.held = 0.0;
     }
@@ -263,18 +305,59 @@ impl Background for Cow {
     }
 
     fn render(&self, canvas: &mut Canvas, visuals: &Visuals, _signal: &PerformanceSignal) {
-        // Find somewhere near the bottom the board is not.
-        let guess = wrap(&self.remark, BUBBLE_TEXT).len() as u16 + 2 + COW.len() as u16;
-        let (start, span) = canvas.widest_free_span(canvas.height().saturating_sub(guess));
-        if span == 0 {
+        // Beside a board, the first and last free spans are the margins either
+        // side of it, and each cow stands against the board, facing it. With
+        // nothing on screen there is one span, the whole width, so each cow takes
+        // a half and stands at the outer end of it, facing in: the title menu
+        // has the middle.
+        let spans = canvas.free_spans();
+        let stands = match spans.as_slice() {
+            [] => return,
+            [(start, width)] => {
+                let half = width / 2;
+                [
+                    (Facing::Right, *start, half, false),
+                    (Facing::Left, start + half, width - half, true),
+                ]
+            }
+            [first, .., last] => [
+                (Facing::Right, first.0, first.1, true),
+                (Facing::Left, last.0, last.1, false),
+            ],
+        };
+        for (remark, (facing, start, room, at_end)) in self.remarks.iter().zip(stands) {
+            self.draw_cow(canvas, visuals, remark, facing, (start, room), at_end);
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        "Cowsay"
+    }
+}
+
+impl Cow {
+    /// One cow and its bubble in the columns `span` gives it, at the span's
+    /// right end if `at_end`, its left otherwise. A span too narrow for the
+    /// whole cow gets none of it: half a cow reads as a mistake.
+    fn draw_cow(
+        &self,
+        canvas: &mut Canvas,
+        visuals: &Visuals,
+        remark: &str,
+        facing: Facing,
+        (start, room): (u16, u16),
+        at_end: bool,
+    ) {
+        if usize::from(room) < COW_WIDTH {
             return;
         }
 
         // Wrap to what the space allows, so a narrow margin still gets the
         // whole remark rather than a clipped one.
-        let text_width = (span as usize).saturating_sub(4).clamp(8, BUBBLE_TEXT);
-        let bubble = bubble(&wrap(&self.remark, text_width));
-        let cow: Vec<String> = COW
+        let text_width = usize::from(room).saturating_sub(4).clamp(8, BUBBLE_TEXT);
+        let bubble = bubble(&wrap(remark, text_width));
+        let cow: Vec<String> = facing
+            .art()
             .iter()
             .map(|line| {
                 line.replace("{e}", self.mood.eyes())
@@ -286,25 +369,31 @@ impl Background for Cow {
         let Some(top) = canvas.height().checked_sub(height) else {
             return;
         };
-        let width = bubble.iter().map(|l| l.chars().count()).max().unwrap_or(0);
-        let width = width.max(COW_WIDTH) as u16;
-        // Centred in a margin, but kept to the left of an open screen, where
-        // the title menu takes the middle.
-        let x = start + (span.saturating_sub(width) / 2).min(2);
+        let bubble_width = bubble.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+        let width = bubble_width.max(COW_WIDTH as u16);
+        let gap = room.saturating_sub(width).min(GAP);
+        let x = if at_end {
+            start + room - width - gap
+        } else {
+            start + gap
+        };
+        // As in cowsay, the bubble sits over the way the cow faces: flush left
+        // over a left-facing cow, flush right over a right-facing one, which
+        // puts both bubbles on the board's side.
+        let (bubble_x, cow_x) = match facing {
+            Facing::Left => (x, x),
+            Facing::Right => (x + width - bubble_width, x + width - COW_WIDTH as u16),
+        };
 
         let text = Style::default().fg(self.mood.colour(visuals));
         let body = Style::default().fg(Color::Gray).add_modifier(Modifier::DIM);
         for (row, line) in bubble.iter().enumerate() {
-            canvas.text(x, top + row as u16, line, text);
+            canvas.text(bubble_x, top + row as u16, line, text);
         }
         for (row, line) in cow.iter().enumerate() {
             let y = top + (bubble.len() + row) as u16;
-            canvas.text(x, y, line, body);
+            canvas.text(cow_x, y, line, body);
         }
-    }
-
-    fn name(&self) -> &'static str {
-        "Cowsay"
     }
 }
 
@@ -439,16 +528,41 @@ mod tests {
         }
     }
 
-    /// Both legs stand in cowsay's column 16 whatever the face, tongue or not.
+    /// Both front legs stand in one column whatever the face, tongue or not:
+    /// column 8 for cowsay's own cow, 10 for the mirrored one, whose
+    /// front legs are the last pair on the line rather than the first.
     #[test]
     fn the_cows_legs_line_up() {
-        for mood in [Mood::Idle, Mood::GameOver] {
-            let legs: Vec<usize> = COW[3..]
-                .iter()
-                .map(|line| line.replace("{t}", mood.tongue()).find("||").unwrap())
-                .collect();
-            assert_eq!(legs, [16, 16], "{mood:?}");
+        for (facing, column) in [(Facing::Left, 8), (Facing::Right, 10)] {
+            for mood in [Mood::Idle, Mood::GameOver] {
+                let legs: Vec<usize> = facing.art()[3..]
+                    .iter()
+                    .map(|line| {
+                        let line = line.replace("{t}", mood.tongue());
+                        match facing {
+                            Facing::Left => line.find("||"),
+                            Facing::Right => line.rfind("||"),
+                        }
+                        .unwrap()
+                    })
+                    .collect();
+                assert_eq!(legs, [column, column], "{facing:?} {mood:?}");
+            }
         }
+    }
+
+    /// The right-facing cow is cowsay's turned round, glyph for glyph.
+    #[test]
+    fn the_right_facing_cow_is_the_left_facing_one_mirrored() {
+        let fill = |art: &[&str]| -> Vec<String> {
+            art.iter()
+                .map(|line| line.replace("{e}", "oo").replace("{t}", "U"))
+                .collect()
+        };
+        assert_eq!(
+            crate::background::mirror(&fill(&COW_FACING_LEFT)),
+            fill(&COW_FACING_RIGHT)
+        );
     }
 
     /// Danger outranks encouragement: a combo on a nearly full board is still a
@@ -482,7 +596,9 @@ mod tests {
             ..Default::default()
         };
         run(&mut cow, 2.0, &signal);
-        assert!(cow.remark.contains('7'), "{:?}", cow.remark);
+        for remark in &cow.remarks {
+            assert!(remark.contains('7'), "{remark:?}");
+        }
     }
 
     /// A signal flickering every frame must not make the cow flicker with it.
@@ -541,10 +657,11 @@ mod tests {
             CELEBRATE_FOR - 0.5,
             &placed(1, ClearKind::Tetris, false),
         );
-        let first = cow.remark.clone();
+        let first = cow.remarks.clone();
 
         cow.tick(TICK, SIZE, &placed(2, ClearKind::Tetris, false));
-        assert_ne!(cow.remark, first);
+        assert_ne!(cow.remarks[0], first[0]);
+        assert_ne!(cow.remarks[1], first[1]);
         run(&mut cow, 1.0, &placed(2, ClearKind::Tetris, false));
         assert_eq!(cow.mood, Mood::Tetris, "the timer restarted");
     }
@@ -560,9 +677,21 @@ mod tests {
     #[test]
     fn idle_remarks_come_round_every_so_often() {
         let mut cow = Cow::seeded(9);
-        let first = cow.remark.clone();
+        let first = cow.remarks.clone();
         run(&mut cow, IDLE_ROTATE + 0.5, &PerformanceSignal::default());
-        assert_ne!(cow.remark, first);
+        assert_ne!(cow.remarks[0], first[0]);
+        assert_ne!(cow.remarks[1], first[1]);
+    }
+
+    #[test]
+    fn the_two_cows_never_say_the_same_thing() {
+        let mut cow = Cow::seeded(12);
+        for mood in [Mood::Idle, Mood::Tetris, Mood::TSpin, Mood::Panic] {
+            for _ in 0..50 {
+                cow.switch(mood, 3);
+                assert_ne!(cow.remarks[0], cow.remarks[1], "{mood:?}");
+            }
+        }
     }
 
     #[test]
@@ -584,30 +713,89 @@ mod tests {
         assert_eq!(wrap("", 10), [""]);
     }
 
+    /// The column a line of the render first shows `needle` in, if any.
+    fn column_of(rendered: &str, needle: &str) -> Option<usize> {
+        rendered.lines().find_map(|line| {
+            let byte = line.find(needle)?;
+            Some(line[..byte].chars().count())
+        })
+    }
+
+    /// One cow in each margin, each against the board and facing it, with its
+    /// bubble on the board's side.
     #[test]
-    fn the_cow_stands_in_the_free_margin_saying_its_piece() {
+    fn a_cow_stands_either_side_of_the_board_facing_it() {
         let mut cow = Cow::seeded(10);
         cow.switch(Mood::Panic, 0);
-        // A board over the middle; the wider margin is the right-hand one.
-        let board = Rect::new(20, 0, 30, 24);
-        let rendered = render(&cow, 90, 24, &[board]);
+        let board = Rect::new(40, 0, 40, 24);
+        let rendered = render(&cow, 120, 24, &[board]);
         println!("{rendered}");
-        assert!(rendered.contains("(@@)"), "the panicked face");
 
-        let first_word = cow.remark.split_whitespace().next().unwrap();
-        let row = rendered.lines().find(|l| l.contains(first_word)).unwrap();
+        // The left cow faces right: its body is behind its head.
+        let left = column_of(&rendered, "_______/(@@)").expect("left cow");
+        assert!(left < 40);
+        // The right cow is cowsay's own, facing left.
+        let right = column_of(&rendered, "(@@)\\_______").expect("right cow");
+        assert!(right >= 80);
+
+        // Each against the board, with the gap between.
+        let left_end = rendered
+            .lines()
+            .filter_map(|line| {
+                let chars: Vec<char> = line.chars().take(40).collect();
+                chars.iter().rposition(|c| *c != ' ')
+            })
+            .max()
+            .unwrap();
+        assert_eq!(left_end, 40 - 1 - GAP as usize, "the left bubble's edge");
+
+        for (remark, side) in cow.remarks.iter().zip([0..40, 80..120]) {
+            let word = remark.split_whitespace().next().unwrap();
+            let column = column_of(&rendered, word).unwrap();
+            assert!(side.contains(&column), "{remark:?} is in its own margin");
+        }
+    }
+
+    /// Half a cow reads as a mistake, so a margin that cannot hold one whole
+    /// gets none.
+    #[test]
+    fn a_margin_too_narrow_for_a_cow_is_left_empty() {
+        let cow = Cow::seeded(13);
+        let board = Rect::new(15, 0, 40, 24);
+        let rendered = render(&cow, 100, 24, &[board]);
+        println!("{rendered}");
+        for line in rendered.lines() {
+            let left: String = line.chars().take(15).collect();
+            assert!(
+                left.trim().is_empty(),
+                "drawn in a 15-column margin: {left:?}"
+            );
+        }
         assert!(
-            row.find(first_word).unwrap() >= 50,
-            "the remark is in the margin"
+            column_of(&rendered, "(oo)\\_______").is_some(),
+            "the right cow"
         );
+    }
+
+    /// With no board, as on the title screen, the cows stand at the two edges
+    /// facing in, leaving the middle to the menu.
+    #[test]
+    fn without_a_board_the_cows_face_each_other_from_the_edges() {
+        let cow = Cow::seeded(14);
+        let rendered = render(&cow, 100, 24, &[]);
+        println!("{rendered}");
+        let left = column_of(&rendered, "_______/(oo)").expect("left cow");
+        let right = column_of(&rendered, "(oo)\\_______").expect("right cow");
+        assert!(left < 20, "{left}");
+        assert!(right > 80, "{right}");
     }
 
     #[test]
     fn a_narrow_margin_wraps_the_remark_rather_than_clipping_it() {
         let mut cow = Cow::seeded(11);
-        cow.remark = "i can see my barn from up here.".into();
-        let board = Rect::new(18, 0, 60, 24);
-        let rendered = render(&cow, 78, 24, &[board]);
+        cow.remarks = ["i can see my barn from up here.".into(), "moo.".into()];
+        let board = Rect::new(30, 0, 40, 24);
+        let rendered = render(&cow, 100, 24, &[board]);
         println!("{rendered}");
         for word in ["barn", "here."] {
             assert!(rendered.contains(word), "{word} was cut off");

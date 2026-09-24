@@ -9,6 +9,9 @@
 //!
 //! The copies are scattered like polka dots rather than tiled: a few, at random
 //! spots that never touch, chosen once per terminal size so they hold still.
+//!
+//! While a Tetris is mid-clear, for as long as the line-clear delay lasts, the
+//! logos flash a rainbow that runs down them from top to bottom.
 
 use std::time::Duration;
 
@@ -17,7 +20,7 @@ use rand::{Rng, SeedableRng};
 use ratatui::layout::Size;
 use ratatui::style::{Color, Modifier, Style};
 
-use super::{Background, Canvas, PerformanceSignal};
+use super::{running_rainbow, Background, Canvas, PerformanceSignal};
 use crate::ui::style::Visuals;
 
 /// Screen area per logo, in multiples of one logo's own area. Six keeps them
@@ -32,12 +35,18 @@ const PAD_Y: u16 = 3;
 /// Random spots tried before settling for fewer logos than the area allows.
 const ATTEMPTS: usize = 400;
 
+/// Frames each rainbow band holds a row before moving down to the next, which
+/// takes the six bands once round in about NES's 18-frame clear.
+const FLASH_STEP: u32 = 3;
+
 pub struct LogoBackground {
     logo: Logo,
     rng: SmallRng,
     /// Top-left corners of the scattered copies, for `laid_out_for`.
     spots: Vec<(u16, u16)>,
     laid_out_for: Option<Size>,
+    /// Frames into a Tetris's line clear, while one is running.
+    flash: Option<u32>,
 }
 
 impl LogoBackground {
@@ -55,6 +64,7 @@ impl LogoBackground {
             rng,
             spots: Vec::new(),
             laid_out_for: None,
+            flash: None,
         }
     }
 
@@ -117,8 +127,12 @@ impl LogoBackground {
 }
 
 impl Background for LogoBackground {
-    /// Still, like the scenes: the spots only move when the terminal is resized.
-    fn tick(&mut self, _dt: Duration, size: Size, _signal: &PerformanceSignal) {
+    /// Still, like the scenes, apart from a Tetris's flash: the spots only move
+    /// when the terminal is resized.
+    fn tick(&mut self, _dt: Duration, size: Size, signal: &PerformanceSignal) {
+        self.flash = signal
+            .tetris_clearing
+            .then(|| self.flash.map_or(0, |frames| frames + 1));
         if self.laid_out_for != Some(size) {
             self.scatter(size);
         }
@@ -146,12 +160,18 @@ impl Background for LogoBackground {
                     if ch == ' ' {
                         continue;
                     }
-                    let color = if colored {
-                        self.logo.color_at(row, col)
-                    } else {
-                        self.logo.colors[0]
+                    let style = match self.flash {
+                        // Full brightness: it is a flash.
+                        Some(frames) => {
+                            Style::default().fg(running_rainbow(row, frames, FLASH_STEP, visuals))
+                        }
+                        None if colored => Style::default()
+                            .fg(self.logo.color_at(row, col))
+                            .add_modifier(Modifier::DIM),
+                        None => Style::default()
+                            .fg(self.logo.colors[0])
+                            .add_modifier(Modifier::DIM),
                     };
-                    let style = Style::default().fg(color).add_modifier(Modifier::DIM);
                     canvas.put(x + col as u16, y + row as u16, ch, style);
                 }
             }
@@ -383,6 +403,7 @@ const NIXOS_ASCII: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::background::RAINBOW;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
@@ -644,5 +665,76 @@ mod tests {
         let background = LogoBackground::detect();
         assert!(!background.logo.art.is_empty());
         assert_eq!(background.name(), "Distro logo");
+    }
+
+    /// Every drawn cell of a render, as its colour and whether it is dimmed.
+    fn drawn_cells(background: &LogoBackground, size: Size) -> Vec<(Color, bool)> {
+        let area = Rect::new(0, 0, size.width, size.height);
+        let mut buf = Buffer::empty(area);
+        let mut canvas = Canvas::new(&mut buf, area, &[]);
+        background.render(
+            &mut canvas,
+            &Visuals::default(),
+            &PerformanceSignal::default(),
+        );
+        buf.content
+            .iter()
+            .filter(|cell| cell.symbol() != " ")
+            .map(|cell| (cell.fg, cell.modifier.contains(Modifier::DIM)))
+            .collect()
+    }
+
+    #[test]
+    fn the_flash_runs_the_rainbow_down_a_row_at_a_time() {
+        let visuals = Visuals::default();
+        for (row, kind) in RAINBOW.iter().enumerate() {
+            assert_eq!(
+                running_rainbow(row, 0, FLASH_STEP, &visuals),
+                visuals.theme.color(*kind)
+            );
+        }
+        for row in 0..10 {
+            assert_eq!(
+                running_rainbow(row + 1, FLASH_STEP, FLASH_STEP, &visuals),
+                running_rainbow(row, 0, FLASH_STEP, &visuals),
+                "a step later, each colour is a row further down"
+            );
+        }
+    }
+
+    /// The flash lasts exactly as long as a Tetris is mid-clear, bright while
+    /// it runs, and the logos are their usual dimmed selves either side of it.
+    #[test]
+    fn the_logos_flash_only_while_a_tetris_is_clearing() {
+        let tick = Duration::from_nanos(16_666_667);
+        let size = Size::new(120, 40);
+        let calm = PerformanceSignal::default();
+        let clearing = PerformanceSignal {
+            tetris_clearing: true,
+            ..Default::default()
+        };
+        let rainbow: Vec<Color> = RAINBOW
+            .iter()
+            .map(|&kind| Visuals::default().theme.color(kind))
+            .collect();
+
+        let mut background = LogoBackground::named("nixos");
+        background.tick(tick, size, &calm);
+        assert!(drawn_cells(&background, size).iter().all(|&(_, dim)| dim));
+
+        for frame in 0..20 {
+            background.tick(tick, size, &clearing);
+            assert_eq!(background.flash, Some(frame));
+        }
+        let cells = drawn_cells(&background, size);
+        assert!(!cells.is_empty());
+        for (colour, dim) in cells {
+            assert!(!dim, "the flash is drawn at full brightness");
+            assert!(rainbow.contains(&colour), "{colour:?} is not a band");
+        }
+
+        background.tick(tick, size, &calm);
+        assert!(background.flash.is_none());
+        assert!(drawn_cells(&background, size).iter().all(|&(_, dim)| dim));
     }
 }

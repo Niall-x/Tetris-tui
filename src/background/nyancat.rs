@@ -15,8 +15,7 @@ use rand::{Rng, SeedableRng};
 use ratatui::layout::Size;
 use ratatui::style::{Color, Modifier, Style};
 
-use super::{Background, Canvas, PerformanceSignal};
-use crate::engine::piece::PieceKind;
+use super::{Background, Canvas, PerformanceSignal, RAINBOW};
 use crate::ui::style::Visuals;
 
 /// Columns per second the cat flies at.
@@ -31,16 +30,6 @@ const FRAME: f32 = 0.2;
 const WAVE: i32 = 4;
 /// Screen cells per star.
 const CELLS_PER_STAR: usize = 160;
-
-/// Rainbow bands, top to bottom, as the pieces whose colours they borrow.
-const BANDS: [PieceKind; 6] = [
-    PieceKind::Z,
-    PieceKind::L,
-    PieceKind::O,
-    PieceKind::S,
-    PieceKind::J,
-    PieceKind::T,
-];
 
 /// The cat is drawn in two layers so each can take its own colour. Rows are
 /// relative to the cat's top, which sits one row below the rainbow's top.
@@ -134,7 +123,7 @@ impl Nyancat {
     /// The lowest rainbow top that still fits the whole rainbow on screen, with a
     /// row spare for the wave's dip.
     fn lowest_top(&self) -> u16 {
-        self.size.height.saturating_sub(BANDS.len() as u16 + 1)
+        self.size.height.saturating_sub(RAINBOW.len() as u16 + 1)
     }
 
     /// How far behind the cat the rainbow reaches: all the way across, so it
@@ -219,12 +208,12 @@ impl Background for Nyancat {
         for column in tail_end.max(0)..cat_x.min(i32::from(canvas.width())) {
             let stretch = (cat_x - 1 - column) / WAVE;
             let dip = (stretch + self.frame as i32) % 2;
-            for (band, kind) in BANDS.iter().enumerate() {
+            for (band, kind) in RAINBOW.iter().enumerate() {
                 let row = i32::from(y) + band as i32 + dip;
                 let style = Style::default()
                     .fg(visuals.theme.color(*kind))
                     .add_modifier(Modifier::DIM);
-                put(canvas, column, row, glyph, style);
+                canvas.put(column, row, glyph, style);
             }
         }
 
@@ -232,34 +221,17 @@ impl Background for Nyancat {
         let poptart = Style::default().fg(Color::LightMagenta);
         let cat = Style::default().fg(Color::White);
         for (row, line) in POPTART.iter().enumerate() {
-            text(canvas, cat_x, top + row as i32, line, poptart);
+            canvas.text(cat_x, top + row as i32, line, poptart);
         }
         for (row, line) in CAT.iter().enumerate() {
-            text(canvas, cat_x, top + 1 + row as i32, line, cat);
+            canvas.text(cat_x, top + 1 + row as i32, line, cat);
         }
-        text(canvas, cat_x, top + 3, LEGS[self.frame], cat);
-        put(canvas, cat_x - 1, top + 2, TAIL[self.frame], cat);
+        canvas.text(cat_x, top + 3, LEGS[self.frame], cat);
+        canvas.put(cat_x - 1, top + 2, TAIL[self.frame], cat);
     }
 
     fn name(&self) -> &'static str {
         "Nyancat"
-    }
-}
-
-/// Like [`Canvas::put`], but for a position that may be off the left or top
-/// edge, as the cat's is while it flies in.
-fn put(canvas: &mut Canvas, x: i32, y: i32, ch: char, style: Style) {
-    if let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) {
-        canvas.put(x, y, ch, style);
-    }
-}
-
-/// Like [`Canvas::text`], clipping any part of the line left of the screen.
-fn text(canvas: &mut Canvas, x: i32, y: i32, line: &str, style: Style) {
-    for (offset, ch) in line.chars().enumerate() {
-        if ch != ' ' {
-            put(canvas, x + offset as i32, y, ch, style);
-        }
     }
 }
 
@@ -320,7 +292,7 @@ mod tests {
         };
         // Every band is somewhere left of the cat, in its own colour.
         let buf = draw(&cat);
-        for (band, kind) in BANDS.iter().enumerate() {
+        for (band, kind) in RAINBOW.iter().enumerate() {
             let colour = Visuals::default().theme.color(*kind);
             let found = (0..x as u16).any(|column| {
                 [0, 1].iter().any(|dip| {
@@ -371,7 +343,7 @@ mod tests {
             cat.tick(TICK, size, &PerformanceSignal::default());
             if let Flight::Flying { y, .. } = cat.flight {
                 assert!(
-                    y + (BANDS.len() as u16) < size.height,
+                    y + (RAINBOW.len() as u16) < size.height,
                     "no room for the dip"
                 );
             }

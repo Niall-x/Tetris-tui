@@ -93,7 +93,9 @@ pub struct NesGame {
     piece_counts: [u32; 7],
 
     phase: Phase,
-    phase_timer: u32,
+    /// Frames of entry delay left. Set when a piece locks, and counted down
+    /// once any line clear it caused has finished.
+    entry_delay: u32,
     gravity_counter: u32,
     soft_drop_counter: u32,
     /// Rows the current piece has been soft-dropped, paid out when it locks.
@@ -124,7 +126,7 @@ impl NesGame {
             score: 0,
             piece_counts: [0; 7],
             phase: Phase::Falling,
-            phase_timer: 0,
+            entry_delay: 0,
             gravity_counter: 0,
             soft_drop_counter: 0,
             soft_drop_rows: 0,
@@ -224,14 +226,13 @@ impl NesGame {
         self.soft_drop_counter = 0;
         self.soft_drop_rows = 0;
 
-        if self.fits(piece) {
-            self.current = Some(piece);
-            self.phase = Phase::Falling;
+        self.current = Some(piece);
+        self.phase = if self.fits(piece) {
+            Phase::Falling
         } else {
             // Top out: the stack has reached the spawn rows.
-            self.current = Some(piece);
-            self.phase = Phase::GameOver;
-        }
+            Phase::GameOver
+        };
     }
 
     /// Advance exactly one frame.
@@ -260,8 +261,8 @@ impl NesGame {
                 // DAS keeps charging through entry delay, so a held direction
                 // carries into the next piece.
                 self.update_das_charge_only(input);
-                self.phase_timer = self.phase_timer.saturating_sub(1);
-                if self.phase_timer == 0 {
+                self.entry_delay = self.entry_delay.saturating_sub(1);
+                if self.entry_delay == 0 {
                     let kind = self.next;
                     self.next = self.rng.next_piece();
                     self.spawn(kind);
@@ -381,7 +382,9 @@ impl NesGame {
         events.piece_locked = true;
 
         // Entry delay is banded by how high the piece locked within the *visible*
-        // field, so drop the hidden rows before measuring.
+        // field, so drop the hidden rows before measuring. It is decided here,
+        // at the lock, whether or not the piece goes on to clear lines: the
+        // clear animation runs first, and the delay waits out after it.
         let lowest_row = cells
             .iter()
             .map(|&(_, y)| y)
@@ -389,13 +392,14 @@ impl NesGame {
             .unwrap_or(0)
             .max(0)
             .saturating_sub(SPAWN_BUFFER_ROWS as i32) as u32;
+        self.entry_delay = gravity::entry_delay_frames(lowest_row, VISIBLE_HEIGHT as u32);
 
         let full: Vec<usize> = (0..self.board.height())
             .filter(|&y| self.board.is_row_full(y))
             .collect();
 
         if full.is_empty() {
-            self.begin_entry_delay(lowest_row);
+            self.phase = Phase::EntryDelay;
         } else {
             self.pending_clear = full;
             self.phase = Phase::LineClear;
@@ -404,14 +408,7 @@ impl NesGame {
     }
 
     fn complete_line_clear(&mut self, events: &mut FrameEvents) {
-        let cleared = self.board.clear_full_lines();
-        let count = cleared.len() as u32;
-        let lowest_row = cleared
-            .iter()
-            .copied()
-            .max()
-            .unwrap_or(0)
-            .saturating_sub(SPAWN_BUFFER_ROWS) as u32;
+        let count = self.board.clear_full_lines().len() as u32;
         self.pending_clear.clear();
         self.clear_step = 0;
 
@@ -425,12 +422,8 @@ impl NesGame {
         }
 
         events.lines_cleared = count;
-        self.begin_entry_delay(lowest_row);
-    }
-
-    fn begin_entry_delay(&mut self, lock_row: u32) {
+        // The entry delay was set when the piece locked.
         self.phase = Phase::EntryDelay;
-        self.phase_timer = gravity::entry_delay_frames(lock_row, VISIBLE_HEIGHT as u32);
     }
 }
 
@@ -703,6 +696,24 @@ mod tests {
         assert!(game.board.is_row_empty(bottom), "dropped once it finished");
         assert_eq!(game.lines(), 1);
         assert_eq!(game.phase(), Phase::EntryDelay);
+    }
+
+    /// The entry delay after a clear follows where the piece locked, not where
+    /// the cleared rows were: this piece locks at the very top while the bottom
+    /// row clears, so it waits the top band's 18 frames rather than the
+    /// bottom's 10.
+    #[test]
+    fn entry_delay_after_a_clear_is_banded_by_the_lock_not_the_cleared_rows() {
+        let mut game = lock_into_full_rows(1, 0);
+        frames_until_cleared(&mut game);
+        assert_eq!(game.phase(), Phase::EntryDelay);
+
+        let mut frames = 0;
+        while game.phase() == Phase::EntryDelay {
+            game.tick(idle());
+            frames += 1;
+        }
+        assert_eq!(frames, 18);
     }
 
     #[test]

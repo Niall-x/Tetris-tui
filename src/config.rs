@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::KeyCode;
 use serde::{Deserialize, Serialize};
 
 use crate::background::scenes::SceneChoice;
@@ -24,7 +24,6 @@ use crate::input::keyname::{key_name, parse_key};
 use crate::storage;
 use crate::ui::style::{BorderStyle, Skin, Theme, Visuals};
 
-const APP_DIR: &str = "tetris-tui";
 const CONFIG_FILE: &str = "config.toml";
 
 /// A second: longer stops being a pause and starts being a wait.
@@ -134,7 +133,7 @@ fn clamp_level(mode: Mode, level: u32) -> u32 {
 }
 
 pub fn config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join(APP_DIR).join(CONFIG_FILE))
+    Some(dirs::config_dir()?.join(storage::APP_DIR).join(CONFIG_FILE))
 }
 
 impl Config {
@@ -214,7 +213,7 @@ impl Config {
             let keys = configured_keys(&self.bindings, action.name())
                 .unwrap_or_else(|| defaults.keys_for(action));
             for code in keys {
-                map.bind(code, KeyModifiers::NONE, action);
+                map.bind(code, action);
             }
         }
         map
@@ -252,7 +251,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
+    use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent {

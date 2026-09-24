@@ -45,7 +45,9 @@ pub const DAS_REPEAT_FRAMES: u32 = DAS_CHARGE_FRAMES - DAS_RECHARGE_FRAMES;
 /// function so a correction is a single edit.
 pub fn entry_delay_frames(lock_row: u32, visible_height: u32) -> u32 {
     let rows_from_bottom = visible_height.saturating_sub(lock_row + 1);
-    let band = rows_from_bottom.saturating_sub(1) / 4;
+    // Two rows short of a full band at the bottom, so bands start at rows 2, 6,
+    // 10 and 14 from the floor.
+    let band = (rows_from_bottom + 2) / 4;
     (10 + band * 2).min(18)
 }
 
@@ -102,15 +104,26 @@ mod tests {
         assert_eq!(DAS_REPEAT_FRAMES, 6);
     }
 
+    /// Every band edge, so an off-by-some-rows band cannot hide between the
+    /// rows a spot check happens to pick.
     #[test]
-    fn entry_delay_grows_with_lock_height() {
-        // Bottom two rows of a 20-row field.
-        assert_eq!(entry_delay_frames(19, 20), 10);
-        assert_eq!(entry_delay_frames(18, 20), 10);
-        // Then two frames per four-row band, capped at 18.
-        assert_eq!(entry_delay_frames(14, 20), 12);
-        assert_eq!(entry_delay_frames(10, 20), 14);
-        assert_eq!(entry_delay_frames(0, 20), 18);
+    fn entry_delay_grows_two_frames_every_four_rows_above_the_bottom_two() {
+        // (rows up from the floor, frames) at each band's first and last row.
+        let bands = [
+            (0, 10),
+            (1, 10),
+            (2, 12),
+            (5, 12),
+            (6, 14),
+            (9, 14),
+            (10, 16),
+            (13, 16),
+            (14, 18),
+            (19, 18),
+        ];
+        for (up, frames) in bands {
+            assert_eq!(entry_delay_frames(19 - up, 20), frames, "{up} rows up");
+        }
     }
 
     #[test]

@@ -16,7 +16,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::game::Mode;
 
-const APP_DIR: &str = "tetris-tui";
 const SCORES_FILE: &str = "scores.toml";
 
 /// Length of each mode's table.
@@ -57,7 +56,11 @@ pub struct Scores {
 }
 
 pub fn scores_path() -> Option<PathBuf> {
-    Some(dirs::data_dir()?.join(APP_DIR).join(SCORES_FILE))
+    Some(
+        dirs::data_dir()?
+            .join(crate::storage::APP_DIR)
+            .join(SCORES_FILE),
+    )
 }
 
 impl Scores {

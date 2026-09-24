@@ -335,10 +335,7 @@ impl ModernGame {
             return events;
         }
 
-        self.apply_gravity(input, &mut events);
-        if events.piece_locked {
-            return events;
-        }
+        self.apply_gravity(input);
 
         // Lock delay only runs while the piece is resting on something.
         if let Some(piece) = self.current {
@@ -426,7 +423,7 @@ impl ModernGame {
         self.lock_piece(events);
     }
 
-    fn apply_gravity(&mut self, input: FrameInput, events: &mut FrameEvents) {
+    fn apply_gravity(&mut self, input: FrameInput) {
         let Some(piece) = self.current else { return };
 
         let mut rows_per_frame = 1.0 / (seconds_per_row(self.level) * 60.0);
@@ -450,13 +447,9 @@ impl ModernGame {
                 break;
             }
         }
+        // Landing on the stack still has to wait out lock delay, so nothing locks
+        // here; `tick` runs the lock timer next.
         self.current = Some(piece);
-
-        // Landing exactly on the stack still has to wait out lock delay, so nothing
-        // locks here; `tick` handles that.
-        if self.grounded(piece) && self.lock.frames_remaining() == 0 {
-            self.lock_piece(events);
-        }
     }
 
     fn lock_piece(&mut self, events: &mut FrameEvents) {

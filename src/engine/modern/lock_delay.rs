@@ -22,7 +22,6 @@ pub struct LockDelay {
     timer: u32,
     resets_used: u32,
     lowest_row: i32,
-    grounded: bool,
 }
 
 impl LockDelay {
@@ -33,7 +32,6 @@ impl LockDelay {
             timer: delay_frames,
             resets_used: 0,
             lowest_row: i32::MIN,
-            grounded: false,
         }
     }
 
@@ -45,10 +43,6 @@ impl LockDelay {
         self.resets_used
     }
 
-    pub fn is_grounded(&self) -> bool {
-        self.grounded
-    }
-
     pub fn frames_remaining(&self) -> u32 {
         self.timer
     }
@@ -58,19 +52,16 @@ impl LockDelay {
         self.timer = self.delay_frames;
         self.resets_used = 0;
         self.lowest_row = row;
-        self.grounded = false;
     }
 
     /// Advance one frame. Returns true when the piece should lock now.
     pub fn tick(&mut self, grounded: bool) -> bool {
         if !grounded {
             // Airborne pieces hold a full timer, ready for when they land.
-            self.grounded = false;
             self.timer = self.delay_frames;
             return false;
         }
 
-        self.grounded = true;
         self.timer = self.timer.saturating_sub(1);
         self.timer == 0
     }
@@ -210,6 +201,5 @@ mod tests {
         lock.on_spawn(0);
         assert_eq!(lock.resets_used(), 0);
         assert_eq!(lock.frames_remaining(), LOCK_DELAY_FRAMES);
-        assert!(!lock.is_grounded());
     }
 }

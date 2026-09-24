@@ -13,8 +13,9 @@ use std::io::{self, Stdout};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableFocusChange, EnableFocusChange, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
@@ -91,6 +92,12 @@ pub struct App {
     background_source: (BackgroundKind, SceneChoice),
     /// What this run's placements have done, which reactive backgrounds read.
     history: PlacementHistory,
+    /// How far the title logo's rainbow has run, in ticks, wrapping. It only
+    /// runs while the terminal has focus.
+    title_frames: u32,
+    /// Whether the terminal has focus, as it reports. A terminal that does not
+    /// report focus never says otherwise, so this starts true and stays so.
+    focused: bool,
     /// The terminal's size, which animated backgrounds are sized from as they
     /// tick. Kept current from resize events.
     size: Size,
@@ -113,6 +120,8 @@ impl App {
             background: config.background.create(config.scene),
             background_source: (config.background, config.scene),
             history: PlacementHistory::default(),
+            title_frames: 0,
+            focused: true,
             // A stand-in until the real terminal reports in; tests keep it.
             size: Size::new(80, 24),
             scores,
@@ -151,11 +160,6 @@ impl App {
         self.history = PlacementHistory::default();
     }
 
-    /// Remember how this session was set up, so a bare launch resumes it.
-    fn remember_session(&mut self) {
-        self.save_config();
-    }
-
     /// Persist a settings change and pick up anything that can take effect now.
     fn apply_config(&mut self) {
         // Rebinding applies immediately; the modern timing settings are read when
@@ -190,15 +194,26 @@ impl App {
     // -- input ------------------------------------------------------------
 
     fn handle_event(&mut self, event: Event, now: Instant) {
-        if let Event::Resize(width, height) = event {
-            self.size = Size::new(width, height);
-            return;
-        }
-        let Event::Key(key) = event else { return };
+        let key = match event {
+            Event::Resize(width, height) => {
+                self.size = Size::new(width, height);
+                return;
+            }
+            Event::FocusGained => {
+                self.focused = true;
+                return;
+            }
+            Event::FocusLost => {
+                self.focused = false;
+                return;
+            }
+            Event::Key(key) => key,
+            _ => return,
+        };
 
         // Raw mode swallows the terminal's own interrupt, so Ctrl-C is handled
-        // here instead: from any screen it leaves, rather than being read as the
-        // hold key that plain `c` is bound to.
+        // here instead: from any screen it leaves, rather than being read as
+        // whatever plain `c` happens to be bound to.
         if key.kind != KeyEventKind::Release
             && key.code == KeyCode::Char('c')
             && key.modifiers.contains(KeyModifiers::CONTROL)
@@ -444,8 +459,11 @@ impl App {
         let signal = self.signal();
         self.background.tick(TICK, self.size, &signal);
 
+        // Held on its current colours while the player is in another window.
+        if self.focused {
+            self.title_frames = self.title_frames.wrapping_add(1);
+        }
         self.pressed.clear();
-        self.held.expire(now);
     }
 
     /// How the run is going, for backgrounds that react to it. A quiet default
@@ -496,9 +514,14 @@ impl App {
 
         match &self.state {
             AppState::Playing => {}
-            AppState::Title(menu) => {
-                menu_ui::render_title(frame, area, menu, self.config.mode, &visuals)
-            }
+            AppState::Title(menu) => menu_ui::render_title(
+                frame,
+                area,
+                menu,
+                self.config.mode,
+                &visuals,
+                self.title_frames,
+            ),
             AppState::Options(menu) => menu_ui::render_options(frame, area, menu, &self.config),
             AppState::HighScores(view) => {
                 menu_ui::render_scores(frame, area, view, &self.scores, &visuals)
@@ -630,7 +653,6 @@ impl App {
 }
 
 pub fn run(mode: Option<Mode>, start_level: Option<u32>) -> io::Result<()> {
-    let config = Config::load();
     let precise = supports_keyboard_enhancement().unwrap_or(false);
     let timing = if precise {
         TimingMode::Precise
@@ -638,7 +660,7 @@ pub fn run(mode: Option<Mode>, start_level: Option<u32>) -> io::Result<()> {
         TimingMode::Inferred
     };
 
-    let mut config = config;
+    let mut config = Config::load();
     if let Some(mode) = mode {
         config.mode = mode;
     }
@@ -657,7 +679,9 @@ pub fn run(mode: Option<Mode>, start_level: Option<u32>) -> io::Result<()> {
     let mut terminal = setup(precise)?;
     app.size = terminal.size()?;
     let result = event_loop(&mut terminal, &mut app);
-    app.remember_session();
+    // Settings are saved as they change, but a mode or level given on the
+    // command line is only saved here, so the next bare launch resumes it.
+    app.save_config();
     restore(precise)?;
     result
 }
@@ -693,7 +717,14 @@ fn event_loop(terminal: &mut Terminal<Backend>, app: &mut App) -> io::Result<()>
 fn setup(precise: bool) -> io::Result<Terminal<Backend>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    // Focus reporting is a terminal feature rather than a platform one, and a
+    // terminal without it simply never sends the events.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::cursor::Hide,
+        EnableFocusChange
+    )?;
     if precise {
         // Real press/release events, which is what makes DAS frame-accurate.
         //
@@ -724,7 +755,12 @@ fn restore(precise: bool) -> io::Result<()> {
     if precise {
         let _ = stdout.execute(PopKeyboardEnhancementFlags);
     }
-    execute!(stdout, LeaveAlternateScreen, crossterm::cursor::Show)?;
+    execute!(
+        stdout,
+        DisableFocusChange,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    )?;
     disable_raw_mode()
 }
 
@@ -770,6 +806,28 @@ mod tests {
         let app = title_app();
         assert!(matches!(app.state, AppState::Title(_)));
         assert!(app.game.is_none());
+    }
+
+    /// The title logo's rainbow holds its colours while the terminal is in the
+    /// background, and carries on from there when it comes back.
+    #[test]
+    fn the_title_rainbow_only_runs_while_the_terminal_has_focus() {
+        let mut app = title_app();
+        let now = Instant::now();
+        for _ in 0..10 {
+            app.tick(now);
+        }
+        assert_eq!(app.title_frames, 10);
+
+        app.handle_event(Event::FocusLost, now);
+        for _ in 0..10 {
+            app.tick(now);
+        }
+        assert_eq!(app.title_frames, 10, "frozen while unfocused");
+
+        app.handle_event(Event::FocusGained, now);
+        app.tick(now);
+        assert_eq!(app.title_frames, 11, "resumes where it stopped");
     }
 
     #[test]

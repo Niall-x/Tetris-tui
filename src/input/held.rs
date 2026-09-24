@@ -85,15 +85,6 @@ impl HeldKeys {
     pub fn clear(&mut self) {
         self.held.clear();
     }
-
-    /// Drop entries that have gone quiet, so the map does not grow unbounded in
-    /// inferred mode.
-    pub fn expire(&mut self, now: Instant) {
-        if self.mode == TimingMode::Inferred {
-            self.held
-                .retain(|_, &mut last_seen| now.duration_since(last_seen) < RELEASE_GRACE);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -139,15 +130,6 @@ mod tests {
         }
 
         assert!(!keys.is_held(Action::MoveRight, now + Duration::from_millis(400)));
-    }
-
-    #[test]
-    fn expiry_clears_stale_inferred_holds() {
-        let mut keys = HeldKeys::new(TimingMode::Inferred);
-        let t0 = Instant::now();
-        keys.press(Action::SoftDrop, t0);
-        keys.expire(t0 + Duration::from_millis(500));
-        assert!(!keys.is_held(Action::SoftDrop, t0));
     }
 
     #[test]

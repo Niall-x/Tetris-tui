@@ -310,7 +310,7 @@ One uniform trait signature — `signals` is handed to every background each tic
 | 6 | Bonsai (cbonsai-style) | animated, cosmetic | procedural recursive-branch growth, calm |
 | 7 | Pipes (pipes.sh-style) | animated, cosmetic | box-drawing cursors laying pipe glyphs |
 | 8 | Nyancat | animated, cosmetic | fixed-frame sprite loop + scrolling rainbow trail |
-| 9 | Locomotive (sl-style) | animated, cosmetic, **rare event** | occasional cross-screen chug; doubles nicely as a game-over easter egg |
+| 9 | Locomotive (sl) | animated, cosmetic | sl's D51, back and forth across the screen at a random height each crossing, short pause between; game over cuts the pause short |
 | 10 | Fastfetch logo | static or slow-drift | your distro's ASCII logo tiled across the background; see §8.3 |
 | 11 | Cava-style audio bars | animated, cosmetic, **feature-gated, low priority** | see §8.4 — visualizes the game's *own* music/SFX only, not system audio; exists only if §12's audio subsystem gets built |
 
@@ -443,6 +443,7 @@ Ordered to de-risk rules-accuracy first, cosmetics last.
 - **7-bag first piece** (§4.3) — resolved. The Guideline places no constraint on the first piece; the "never S/Z/O first" rule belongs to Tetris The Grand Master Ace, not the Guideline (tetris.wiki/Random_Generator). Implemented as a plain shuffle. The documented guarantees (max 12-piece gap, S/Z runs bounded at 4) are asserted as property tests.
 - **fastfetch logo invocation** (§8.3) — not needed. The logo background took §8.3's recommended route of bundling its own distro logos, matched from `/etc/os-release`, so nothing ever calls `fastfetch`.
 - **NES line-clear delay** (§3.4) — resolved from the disassembly (CelestialAmber/TetrisNESDisasm, `updateLineClearingAnimation`). Five steps, each blanking one column either side of centre (the `leftColumns` 4,3,2,1,0 / `rightColumns` 5,6,7,8,9 tables), advancing only on frames where `frameCounter & 3 == 0`. So the first step lands 1–4 frames after the lock and the clear takes 17–20 frames, matching tetris.wiki. The rows above drop in one go when it finishes, with no falling animation. A Tetris also turns the background white on each of those frames (`@renderTetrisFlashAndSound`). All three are implemented and pinned by tests in `nes/game.rs`, which replaced the flat 18-frame placeholder.
+- **NES entry-delay banding** (§3.4) — corrected to the documented pattern. The implementation had drifted from it, giving the bottom five rows 10 frames where the pattern gives only the bottom two; it now runs 10 frames for the bottom two rows and 2 more for each four rows above, to 18. The band comes from the row the piece locked at, including when the lock clears lines, where it had been taken from the lowest cleared row instead. Every band edge is pinned by a test in `nes/gravity.rs`. The exact cutoffs are still worth confirming against a disassembly, below.
 
 ### Still open
 

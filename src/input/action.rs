@@ -47,10 +47,6 @@ impl Action {
         }
     }
 
-    pub fn from_name(name: &str) -> Option<Action> {
-        Action::ALL.into_iter().find(|a| a.name() == name)
-    }
-
     /// How this reads in a controls list.
     pub fn label(self) -> &'static str {
         match self {
@@ -138,23 +134,11 @@ mod tests {
     }
 
     #[test]
-    fn every_action_round_trips_through_its_config_name() {
-        for action in Action::ALL {
-            assert_eq!(Action::from_name(action.name()), Some(action));
-        }
-    }
-
-    #[test]
     fn names_are_unique() {
         let mut names: Vec<&str> = Action::ALL.iter().map(|a| a.name()).collect();
         names.sort_unstable();
         let count = names.len();
         names.dedup();
         assert_eq!(names.len(), count, "two actions share a config name");
-    }
-
-    #[test]
-    fn unknown_names_are_rejected() {
-        assert_eq!(Action::from_name("teleport"), None);
     }
 }

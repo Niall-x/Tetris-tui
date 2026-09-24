@@ -73,10 +73,6 @@ pub struct TitleMenu {
 }
 
 impl TitleMenu {
-    pub fn items(&self) -> [TitleItem; 4] {
-        TitleItem::ALL
-    }
-
     pub fn navigate(&mut self, input: MenuInput) -> Option<TitleItem> {
         match input {
             MenuInput::Up | MenuInput::Left => {

@@ -132,7 +132,7 @@ impl Skin {
             (Skin::AsciiBracket, CellRole::Filled) => ["[", "]"],
             (Skin::AsciiBracket, CellRole::Ghost) => ["(", ")"],
 
-            (Skin::Letter, CellRole::Filled) => [uppercase_letter(kind), " "],
+            (Skin::Letter, CellRole::Filled) => [kind.letter(), " "],
             (Skin::Letter, CellRole::Ghost) => [lowercase_letter(kind), " "],
         }
     }
@@ -156,23 +156,9 @@ impl Skin {
     }
 }
 
-/// `PieceKind::letter` returns a `char`; the cell API deals in `&str` pairs, so
-/// both cases are spelled out here rather than allocating a string per cell per
-/// frame.
-fn uppercase_letter(kind: PieceKind) -> &'static str {
-    match kind {
-        PieceKind::I => "I",
-        PieceKind::O => "O",
-        PieceKind::T => "T",
-        PieceKind::S => "S",
-        PieceKind::Z => "Z",
-        PieceKind::J => "J",
-        PieceKind::L => "L",
-    }
-}
-
 /// The ghost uses the lowercase form, so the two are distinguishable without
-/// colour.
+/// colour. Spelled out as `&'static str` for the same reason `PieceKind::letter`
+/// is.
 fn lowercase_letter(kind: PieceKind) -> &'static str {
     match kind {
         PieceKind::I => "i",
@@ -393,16 +379,12 @@ mod tests {
         }
     }
 
-    /// The letter glyphs are spelled out separately from `PieceKind::letter`; they
-    /// must not drift from it.
+    /// The ghost's lowercase letters are spelled out separately from
+    /// `PieceKind::letter`; they must not drift from it.
     #[test]
-    fn the_letter_glyphs_match_the_pieces_own_letter() {
+    fn the_ghost_letters_match_the_pieces_own_letter() {
         for kind in PieceKind::ALL {
-            assert_eq!(uppercase_letter(kind), kind.letter().to_string());
-            assert_eq!(
-                lowercase_letter(kind),
-                kind.letter().to_lowercase().to_string()
-            );
+            assert_eq!(lowercase_letter(kind), kind.letter().to_lowercase());
         }
     }
 
