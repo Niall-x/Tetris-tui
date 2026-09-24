@@ -244,11 +244,11 @@ impl Game {
         }
     }
 
-    /// NES tracks how many of each piece it has dealt; modern does not.
-    pub fn piece_count(&self, kind: PieceKind) -> Option<u32> {
+    /// How many of each piece the run has dealt, for the statistics panel.
+    pub fn piece_count(&self, kind: PieceKind) -> u32 {
         match self {
-            Game::Nes(game) => Some(game.piece_count(kind)),
-            Game::Modern(_) => None,
+            Game::Nes(game) => game.piece_count(kind),
+            Game::Modern(game) => game.piece_count(kind),
         }
     }
 
@@ -270,6 +270,7 @@ impl Game {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::modern::game::DEFAULT_PREVIEWS;
 
     #[test]
     fn both_modes_start_with_a_piece_in_play() {
@@ -288,16 +289,14 @@ mod tests {
         assert!(game.hold_piece().is_none());
         assert!(game.combo().is_none());
         assert_eq!(game.preview().len(), 1, "NES shows a single next piece");
-        assert!(game.piece_count(PieceKind::T).is_some());
     }
 
     #[test]
     fn modern_exposes_hold_ghost_and_a_queue() {
         let game = Game::new(Mode::Modern, 1);
         assert!(game.ghost().is_some());
-        assert_eq!(game.preview().len(), 5);
+        assert_eq!(game.preview().len(), DEFAULT_PREVIEWS);
         assert_eq!(game.combo(), Some(0));
-        assert!(game.piece_count(PieceKind::T).is_none());
     }
 
     /// Each mode must resolve piece cells through its own rotation system.

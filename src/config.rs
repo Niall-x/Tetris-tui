@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::background::scenes::SceneChoice;
 use crate::background::BackgroundKind;
+use crate::engine::modern::bag::MAX_PREVIEW;
 use crate::engine::modern::game::{
-    Settings as ModernSettings, DEFAULT_ARR_FRAMES, DEFAULT_DAS_FRAMES,
+    Settings as ModernSettings, DEFAULT_ARR_FRAMES, DEFAULT_DAS_FRAMES, DEFAULT_PREVIEWS,
 };
 use crate::game::Mode;
 use crate::input::action::{Action, MenuInput};
@@ -43,6 +44,9 @@ pub struct Config {
     /// Modern only: frames cleared rows animate before the rows above drop. Zero
     /// is instant. NES's line-clear delay is fixed by the ruleset.
     pub line_clear_frames: u32,
+    /// Modern only: how many upcoming pieces the next queue shows, 1 to 6. NES
+    /// previews exactly one.
+    pub previews: usize,
     /// The three visual axes (§7), independent of each other and of the ruleset.
     pub theme: Theme,
     pub skin: Skin,
@@ -73,6 +77,7 @@ impl Default for Config {
             arr_frames: DEFAULT_ARR_FRAMES,
             ghost: true,
             line_clear_frames: 0,
+            previews: DEFAULT_PREVIEWS,
             theme: Theme::default(),
             skin: Skin::default(),
             border: BorderStyle::default(),
@@ -194,6 +199,7 @@ impl Config {
             arr_frames: self.arr_frames.max(1),
             ghost: self.ghost,
             line_clear_frames: self.line_clear_frames.min(MAX_LINE_CLEAR_FRAMES),
+            previews: self.previews.clamp(1, MAX_PREVIEW),
         }
     }
 

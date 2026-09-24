@@ -214,9 +214,10 @@ impl App {
 
         match key.kind {
             KeyEventKind::Press => self.handle_menu_key(key),
-            // Autorepeat walks a menu the way it scrolls anything else, but only
-            // for movement: a held Enter or Esc must not fire twice.
-            KeyEventKind::Repeat if self.is_movement(&key) => self.handle_menu_key(key),
+            // Autorepeat walks a menu the way it scrolls anything else, and edits
+            // a name the way it would in any text field, but a held Enter or Esc
+            // must not fire twice.
+            KeyEventKind::Repeat if self.repeats(&key) => self.handle_menu_key(key),
             KeyEventKind::Repeat => {}
             // A key let go while a menu is up still has to register as released,
             // or it would come back held when play resumes.
@@ -251,9 +252,15 @@ impl App {
         }
     }
 
-    /// Whether a key moves a menu cursor or value, as opposed to confirming or
-    /// leaving — the distinction autorepeat needs.
-    fn is_movement(&self, key: &KeyEvent) -> bool {
+    /// Whether holding a key should keep acting on a menu. Movement repeats, as
+    /// does editing the high-score name: a held Backspace keeps deleting and a
+    /// held letter keeps typing, as in a terminal. Confirming and leaving do not.
+    fn repeats(&self, key: &KeyEvent) -> bool {
+        if let AppState::GameOver(menu) = &self.state {
+            if menu.entering {
+                return matches!(key.code, KeyCode::Backspace | KeyCode::Char(_));
+            }
+        }
         matches!(
             self.menu_keys.input_for(key),
             Some(MenuInput::Up | MenuInput::Down | MenuInput::Left | MenuInput::Right)
@@ -469,7 +476,11 @@ impl App {
         // never disappears under a menu.
         let plan = match (&self.state, &self.game) {
             (AppState::Title(_) | AppState::HighScores(_), _) | (_, None) => None,
-            (_, Some(game)) => Some(layout::compute(area, game.preview().len())),
+            (_, Some(game)) => Some(layout::compute(
+                area,
+                game.preview().len(),
+                game.mode().has_hold(),
+            )),
         };
 
         // The background goes down first and keeps clear of wherever the board and
@@ -532,11 +543,7 @@ impl App {
                 return;
             }
             reserved.push(plan.board);
-            reserved.extend(
-                [plan.stats, plan.next, plan.piece_counts]
-                    .into_iter()
-                    .flatten(),
-            );
+            reserved.extend(plan.panels());
         }
 
         let signal = self.signal();
@@ -577,10 +584,19 @@ impl App {
                 .title(format!(" {} ", game.mode().label()))
                 .border_style(Style::default().fg(Color::DarkGray)),
         );
-        // With no room for the stats panel, the essentials ride along the bottom
-        // edge instead, so a narrow terminal still shows how the run is going.
-        if plan.stats.is_none() {
-            let line = format!(" {} · L{} · {}L ", game.score(), game.level(), game.lines());
+        // Whatever the panels had no room for rides along the bottom edge instead,
+        // so a narrow terminal still shows how the run is going.
+        let missing = match (plan.score, plan.stats) {
+            (None, _) => Some(format!(
+                " {} · L{} · {}L ",
+                game.score(),
+                game.level(),
+                game.lines()
+            )),
+            (Some(_), None) => Some(format!(" L{} · {}L ", game.level(), game.lines())),
+            _ => None,
+        };
+        if let Some(line) = missing {
             block = block.title_bottom(
                 Line::from(visuals.text(&line).into_owned())
                     .style(Style::default().fg(Color::White))
@@ -596,14 +612,17 @@ impl App {
 
         board_view::render(frame.buffer_mut(), interior, game, &visuals);
 
-        if let Some(area) = plan.stats {
-            hud::render_stats(frame, area, game, self.held.mode().label(), &visuals);
+        if let Some(area) = plan.hold {
+            hud::render_hold(frame, area, game, &visuals);
         }
         if let Some(area) = plan.next {
             hud::render_next(frame, area, game, &visuals);
         }
-        if let Some(area) = plan.piece_counts {
-            hud::render_side_panel(frame, area, game, &visuals);
+        if let Some(area) = plan.stats {
+            hud::render_stats(frame, area, game, self.held.mode().label(), &visuals);
+        }
+        if let Some(area) = plan.score {
+            hud::render_score(frame, area, game, &visuals);
         }
 
         Some(interior)
@@ -1027,6 +1046,32 @@ mod tests {
         assert_eq!(menu.rank, Some(0));
     }
 
+    /// With the Kitty protocol a held key arrives as repeats, which the name
+    /// field has to act on like any terminal would. A held Enter still submits
+    /// only once, on its press.
+    #[test]
+    fn holding_backspace_or_a_letter_repeats_in_the_name_field() {
+        let mut app = App::headless(Mode::Modern, 1, TimingMode::Precise);
+        let now = Instant::now();
+        app.state = AppState::GameOver(GameOverMenu::new(true, "player"));
+
+        app.handle_event(press(KeyCode::Backspace), now);
+        for _ in 0..10 {
+            app.handle_event(key_event(KeyCode::Backspace, KeyEventKind::Repeat), now);
+        }
+        app.handle_event(press(KeyCode::Char('a')), now);
+        for _ in 0..2 {
+            app.handle_event(key_event(KeyCode::Char('a'), KeyEventKind::Repeat), now);
+        }
+        app.handle_event(key_event(KeyCode::Enter, KeyEventKind::Repeat), now);
+
+        let AppState::GameOver(menu) = &app.state else {
+            panic!("still on the game over screen")
+        };
+        assert_eq!(menu.name, "aaa");
+        assert!(menu.entering, "a repeated Enter must not submit");
+    }
+
     /// A run that did not place is not written to the table at all.
     #[test]
     fn a_run_that_did_not_place_records_nothing() {
@@ -1267,7 +1312,7 @@ mod tests {
         terminal.draw(|frame| app.draw(frame)).unwrap();
         let buffer = terminal.backend().buffer().clone();
 
-        let plan = layout::compute(Rect::new(0, 0, 90, 30), 1);
+        let plan = layout::compute(Rect::new(0, 0, 90, 30), 1, false);
         let board_interior = Rect::new(
             plan.board.x + 1,
             plan.board.y + 1,

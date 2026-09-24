@@ -231,6 +231,7 @@ Triggers on: spawn cells already occupied ("block out"), a piece locking entirel
   - Side panels (hold, next-queue, score/stats, background canvas) **progressively collapse** as space shrinks — e.g. drop the background layer first, then the next-piece queue length, then hold/score panel labels to abbreviated form — before falling back to a minimum-size message, mirroring how btop hides panels rather than breaking layout.
   - Below a defined minimum (board's minimum cell footprint + a thin HUD strip, e.g. roughly 10×2+2 cols × 20+2 rows plus a stats line), show a centered "resize your terminal" message instead of a squeezed board.
   - Backgrounds receive the actual available `Rect` each tick and must adapt their canvas to it (e.g. matrix-rain column count, pipe cursor bounds) rather than assuming a fixed size.
+- **HUD arrangement, shared by both modes**: hold top-left, next queue top-right, stats bottom-left, score bottom-right. Top panels align with the board's top edge, bottom panels with its bottom edge. Hold top-left and the queue on the right follow Guideline games; stats on the left follows NES. A panel for a feature the ruleset lacks (NES hold) is left out, not drawn empty, and nothing else moves into its place. The next box is sized to the chosen preview count: three rows per piece, so six previews plus the one-line score box exactly fill the board's 22 rows.
 - **Transparency**: never paint an explicit opaque RGB background fill for cells that should read as "empty terminal" — use the terminal's default/reset background so the terminal emulator's own transparency/compositor blur shows through, same principle as a transparent-background btop/fastfetch setup.
   - `blank` background = literally untouched/transparent, not an opaque fill.
   - All animated/cosmetic backgrounds only ever set **foreground** character+color on their "off"/empty cells, never an opaque cell background — transparency is preserved everywhere except the board panel, which intentionally stays opaque for legibility (per the layering rule above; no separate toggle needed, it's an inherent property of the board panel, not a background property).
@@ -356,6 +357,7 @@ Per your steer: this is **not** a system-audio-capture background. It only visua
    Board border: None | ASCII | Single | Double | Rounded | Heavy (§7.3)
    Keybinds: per-Action rebind list with conflict detection (§6)
    DAS/ARR tuning: Modern mode only (NES's is fixed, not exposed — deliberate asymmetry, §4.6)
+   Next pieces: Modern mode only, 1–6, default 5 (NES always previews one). Guideline titles disagree — Puyo Puyo Tetris 5, Tetris 99 and Tetris DS 6, Tetris Worlds 3 (GBA) or 6, TETR.IO 1–6 selectable, Jstris 0–5 selectable (tetris.wiki game pages); the Guideline itself only says "up to six"
    Starting level
    High scores: view-only, separate NES/Modern lists
    All changes persist to config.toml immediately on change

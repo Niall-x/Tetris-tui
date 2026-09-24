@@ -1,14 +1,15 @@
-//! Score, level, previews and the mode-specific side panel.
+//! The four panels around the board: hold, next, stats and score.
 //!
-//! The two modes show genuinely different things: NES has one preview piece and a
-//! piece-statistics bar, modern has a hold slot, a five-piece queue and combo /
-//! back-to-back state. The panels follow the mode rather than showing a blank slot
-//! for whatever the current ruleset lacks.
+//! Both modes use the same four, in the same places (see `layout`), and fill them
+//! with what their ruleset has. NES previews one piece and has no hold slot;
+//! modern previews as many as the player asked for and adds combo and
+//! back-to-back to the stats. A panel whose feature the ruleset lacks is not
+//! drawn at all, rather than shown empty.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, Padding, Paragraph};
 use ratatui::Frame;
 
 use super::style::{CellRole, Visuals};
@@ -17,16 +18,59 @@ use crate::engine::nes::rotation as nrs;
 use crate::engine::piece::PieceKind;
 use crate::game::{Game, Mode};
 
-/// Minimum width the side panel needs to stay readable.
+/// Minimum width a side panel needs to stay readable.
 pub const PANEL_WIDTH: u16 = 20;
 
-fn labelled(label: &str, value: String) -> Line<'static> {
+/// The score on one line, inside a border.
+pub const SCORE_HEIGHT: u16 = 1 + 2;
+
+/// Level, lines, the combo line and the seven piece counts, inside a border.
+pub const STATS_HEIGHT: u16 = 3 + 7 + 2;
+
+/// Width of a stats row, so labels and values line up down the panel: the
+/// panel's interior less a column of padding either side.
+const STATS_ROW: usize = PANEL_WIDTH as usize - 2 - 2;
+
+/// The order NES's statistics panel lists pieces in. Modern uses it too, so
+/// the panel reads the same in both modes.
+const STATS_ORDER: [PieceKind; 7] = [
+    PieceKind::T,
+    PieceKind::J,
+    PieceKind::Z,
+    PieceKind::O,
+    PieceKind::S,
+    PieceKind::L,
+    PieceKind::I,
+];
+
+/// A stats row: `label` on the left in `label_style`, `value` right-aligned.
+fn stat_row(label: String, label_style: Style, value: String) -> Line<'static> {
+    let pad = STATS_ROW.saturating_sub(label.chars().count());
     Line::from(vec![
-        Span::styled(format!("{label} "), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{value:>9}"), Style::default().fg(Color::White)),
+        Span::styled(label, label_style),
+        Span::styled(format!("{value:>pad$}"), Style::default().fg(Color::White)),
     ])
 }
 
+fn dim() -> Style {
+    Style::default().fg(Color::DarkGray)
+}
+
+pub fn render_score(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            game.score().to_string(),
+            Style::default().fg(Color::White),
+        )))
+        .alignment(Alignment::Center)
+        .block(visuals.border.apply(Block::default().title(" SCORE "))),
+        area,
+    );
+}
+
+/// Level, lines, what the scoring state is doing, and how many of each piece
+/// the run has dealt. `timing_label` says whether key releases are real or
+/// inferred, which is worth seeing but not worth a row of its own.
 pub fn render_stats(
     frame: &mut Frame,
     area: Rect,
@@ -35,35 +79,41 @@ pub fn render_stats(
     visuals: &Visuals,
 ) {
     let mut lines = vec![
-        labelled("SCORE", game.score().to_string()),
-        labelled("LEVEL", game.level().to_string()),
-        labelled("LINES", game.lines().to_string()),
+        stat_row("LEVEL".into(), dim(), game.level().to_string()),
+        stat_row("LINES".into(), dim(), game.lines().to_string()),
     ];
 
-    if game.back_to_back() {
-        lines.push(Line::from(Span::styled(
+    // Always a row, blank when there is nothing to say, so the piece counts
+    // below never jump.
+    lines.push(if game.back_to_back() {
+        Line::from(Span::styled(
             "BACK-TO-BACK",
             Style::default().fg(Color::Yellow),
-        )));
+        ))
     } else if let Some(combo) = game.combo().filter(|&c| c > 1) {
-        lines.push(Line::from(Span::styled(
+        Line::from(Span::styled(
             format!("COMBO x{}", combo - 1),
             Style::default().fg(Color::Cyan),
-        )));
+        ))
     } else {
-        lines.push(Line::from(""));
-    }
+        Line::from("")
+    });
 
-    lines.push(Line::from(Span::styled(
-        timing_label,
-        Style::default().fg(Color::DarkGray),
-    )));
+    lines.extend(STATS_ORDER.iter().map(|&kind| {
+        stat_row(
+            kind.letter().to_string(),
+            Style::default().fg(visuals.theme.color(kind)),
+            game.piece_count(kind).to_string(),
+        )
+    }));
 
-    // The board's border already names the mode, so this panel does not repeat it.
-    frame.render_widget(
-        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" SCORE "))),
-        area,
+    let block = visuals.border.apply(
+        Block::default()
+            .title(" STATS ")
+            .padding(Padding::horizontal(1))
+            .title_bottom(Line::from(Span::styled(format!(" {timing_label} "), dim()))),
     );
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Draw a piece using the same two-columns-per-cell mapping as the board, so
@@ -98,80 +148,43 @@ fn preview_lines(kind: PieceKind, mode: Mode, visuals: &Visuals) -> Vec<Line<'st
         .collect()
 }
 
-pub fn render_next(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
-    let mode = game.mode();
+/// The queue, one piece per three-row slot. Each slot has a fixed height
+/// whatever the piece in it, so the pieces step up by exactly one slot as the
+/// queue advances instead of shuffling about with the I's single row.
+fn queue_lines(queue: &[PieceKind], mode: Mode, visuals: &Visuals) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-
-    // NES previews a single piece; modern shows as much of the queue as fits.
-    let room = area.height.saturating_sub(2) as usize;
-    for kind in game.preview() {
-        let piece = preview_lines(kind, mode, visuals);
-        if lines.len() + piece.len() + 1 > room {
-            break;
+    for (index, &kind) in queue.iter().enumerate() {
+        if index > 0 {
+            lines.push(Line::from(""));
         }
+        let piece = preview_lines(kind, mode, visuals);
+        let pad = 2usize.saturating_sub(piece.len());
         lines.extend(piece);
-        lines.push(Line::from(""));
+        lines.extend(std::iter::repeat_n(Line::from(""), pad));
     }
+    lines
+}
 
+pub fn render_next(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
+    let lines = queue_lines(&game.preview(), game.mode(), visuals);
     frame.render_widget(
-        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" NEXT "))),
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(visuals.border.apply(Block::default().title(" NEXT "))),
         area,
     );
 }
 
-/// The panel whose contents depend entirely on the ruleset: piece statistics for
-/// NES, the hold slot for modern.
-pub fn render_side_panel(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
-    match game.mode() {
-        Mode::Nes => render_piece_counts(frame, area, game, visuals),
-        Mode::Modern => render_hold(frame, area, game, visuals),
-    }
-}
-
-fn render_hold(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
+pub fn render_hold(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
     let lines = match game.hold_piece() {
         Some(kind) => preview_lines(kind, game.mode(), visuals),
-        None => vec![Line::from(Span::styled(
-            "  empty",
-            Style::default().fg(Color::DarkGray),
-        ))],
+        None => vec![Line::from(Span::styled("empty", dim()))],
     };
 
     frame.render_widget(
-        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" HOLD "))),
-        area,
-    );
-}
-
-fn render_piece_counts(frame: &mut Frame, area: Rect, game: &Game, visuals: &Visuals) {
-    // The in-game statistics bar order.
-    let order = [
-        PieceKind::T,
-        PieceKind::J,
-        PieceKind::Z,
-        PieceKind::O,
-        PieceKind::S,
-        PieceKind::L,
-        PieceKind::I,
-    ];
-
-    let lines: Vec<Line> = order
-        .iter()
-        .filter_map(|&kind| {
-            game.piece_count(kind).map(|count| {
-                Line::from(vec![
-                    Span::styled(
-                        format!("{} ", kind.letter()),
-                        Style::default().fg(visuals.theme.color(kind)),
-                    ),
-                    Span::styled(format!("{count:>5}"), Style::default().fg(Color::White)),
-                ])
-            })
-        })
-        .collect();
-
-    frame.render_widget(
-        Paragraph::new(lines).block(visuals.border.apply(Block::default().title(" STATS "))),
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(visuals.border.apply(Block::default().title(" HOLD "))),
         area,
     );
 }
@@ -179,6 +192,7 @@ fn render_piece_counts(frame: &mut Frame, area: Rect, game: &Game, visuals: &Vis
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::layout::next_height;
 
     #[test]
     fn previews_use_double_width_cells() {
@@ -198,6 +212,7 @@ mod tests {
             for kind in PieceKind::ALL {
                 let lines = preview_lines(kind, mode, &Visuals::default());
                 assert!(!lines.is_empty(), "{kind:?} in {mode:?} produced nothing");
+                assert!(lines.len() <= 2, "{kind:?} in {mode:?} is too tall a slot");
             }
         }
     }
@@ -213,6 +228,22 @@ mod tests {
                 .filter(|s| s.content.trim() == "██")
                 .count();
             assert_eq!(filled, 4, "{mode:?}");
+        }
+    }
+
+    /// Every slot is the same height, so an I does not pull the rest of the
+    /// queue up a row, and the full queue fills exactly the box made for it.
+    #[test]
+    fn queue_slots_are_a_fixed_height_and_fill_the_box() {
+        let visuals = Visuals::default();
+        let with_i = queue_lines(&[PieceKind::I, PieceKind::T], Mode::Modern, &visuals);
+        let without = queue_lines(&[PieceKind::O, PieceKind::T], Mode::Modern, &visuals);
+        assert_eq!(with_i.len(), without.len());
+
+        for count in 1..=6 {
+            let queue = vec![PieceKind::T; count];
+            let lines = queue_lines(&queue, Mode::Modern, &visuals);
+            assert_eq!(lines.len() as u16 + 2, next_height(count), "{count} pieces");
         }
     }
 

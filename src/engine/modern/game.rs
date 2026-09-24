@@ -5,7 +5,7 @@
 //! rather than fixed constants. Hold, ghost piece and hard drop all exist here and
 //! all are absent from NES.
 
-use super::bag::SevenBag;
+use super::bag::{SevenBag, MAX_PREVIEW};
 use super::lock_delay::LockDelay;
 use super::scoring::{Placement, ScoreState};
 use super::srs;
@@ -24,6 +24,8 @@ const SOFT_DROP_FACTOR: f32 = 20.0;
 /// so they live in `Settings` rather than as constants in the engine.
 pub const DEFAULT_DAS_FRAMES: u32 = 8;
 pub const DEFAULT_ARR_FRAMES: u32 = 2;
+/// Five, as in Puyo Puyo Tetris and TETR.IO's default.
+pub const DEFAULT_PREVIEWS: usize = 5;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Settings {
@@ -34,6 +36,9 @@ pub struct Settings {
     /// drop and the next piece spawns. Zero clears instantly. Guideline games
     /// differ on this, so it is the player's choice.
     pub line_clear_frames: u32,
+    /// How many upcoming pieces the queue shows, 1 to `MAX_PREVIEW`. Guideline
+    /// games range from one to six, and several let the player choose.
+    pub previews: usize,
 }
 
 impl Default for Settings {
@@ -43,6 +48,7 @@ impl Default for Settings {
             arr_frames: DEFAULT_ARR_FRAMES,
             ghost: true,
             line_clear_frames: 0,
+            previews: DEFAULT_PREVIEWS,
         }
     }
 }
@@ -113,6 +119,9 @@ pub struct ModernGame {
     hold: Option<PieceKind>,
     /// Hold is once per piece, until the piece locks.
     hold_used: bool,
+    /// Pieces dealt from the bag so far, indexed as `PieceKind::ALL`. A piece
+    /// coming back out of hold is not dealt again.
+    piece_counts: [u32; 7],
 
     score: ScoreState,
     start_level: u32,
@@ -148,6 +157,7 @@ impl ModernGame {
             current: None,
             hold: None,
             hold_used: false,
+            piece_counts: [0; 7],
             score: ScoreState::new(),
             start_level: start_level.max(1),
             level: start_level.max(1),
@@ -160,7 +170,7 @@ impl ModernGame {
             clear_elapsed: 0,
             clear_frames: 0,
         };
-        let first = game.bag.next_piece();
+        let first = game.deal();
         game.spawn(first);
         game
     }
@@ -183,7 +193,27 @@ impl ModernGame {
     }
 
     pub fn preview(&self) -> Vec<PieceKind> {
-        self.bag.preview()
+        let mut queue = self.bag.preview();
+        queue.truncate(self.settings.previews.clamp(1, MAX_PREVIEW));
+        queue
+    }
+
+    pub fn piece_count(&self, kind: PieceKind) -> u32 {
+        self.piece_counts[Self::count_index(kind)]
+    }
+
+    fn count_index(kind: PieceKind) -> usize {
+        PieceKind::ALL
+            .iter()
+            .position(|&k| k == kind)
+            .expect("every kind is in ALL")
+    }
+
+    /// The next piece from the bag, counted as it is dealt.
+    fn deal(&mut self) -> PieceKind {
+        let kind = self.bag.next_piece();
+        self.piece_counts[Self::count_index(kind)] += 1;
+        kind
     }
 
     pub fn score(&self) -> u64 {
@@ -328,7 +358,7 @@ impl ModernGame {
 
         let incoming = match self.hold.replace(piece.kind) {
             Some(held) => held,
-            None => self.bag.next_piece(),
+            None => self.deal(),
         };
 
         self.spawn(incoming);
@@ -509,7 +539,7 @@ impl ModernGame {
     }
 
     fn spawn_next(&mut self, events: &mut FrameEvents) {
-        let next = self.bag.next_piece();
+        let next = self.deal();
         self.spawn(next);
         if self.phase == Phase::GameOver {
             events.topped_out = true;
@@ -568,7 +598,7 @@ mod tests {
     fn a_new_game_has_a_piece_a_preview_and_no_hold() {
         let game = ModernGame::new(1);
         assert!(game.current().is_some());
-        assert_eq!(game.preview().len(), 5);
+        assert_eq!(game.preview().len(), DEFAULT_PREVIEWS);
         assert!(game.hold_piece().is_none());
         assert_eq!(game.level(), 1);
     }
@@ -639,6 +669,59 @@ mod tests {
         game.tick(hold);
         assert_eq!(game.hold_piece(), Some(first));
         assert_eq!(game.current().unwrap().kind, second);
+    }
+
+    #[test]
+    fn the_preview_shows_as_many_pieces_as_asked_for() {
+        for previews in 1..=MAX_PREVIEW {
+            let settings = Settings {
+                previews,
+                ..Default::default()
+            };
+            let game = ModernGame::with_settings(1, settings);
+            assert_eq!(game.preview().len(), previews);
+        }
+        // A hand-edited count outside the range is pulled back into it.
+        for (asked, shown) in [(0, 1), (99, MAX_PREVIEW)] {
+            let settings = Settings {
+                previews: asked,
+                ..Default::default()
+            };
+            assert_eq!(
+                ModernGame::with_settings(1, settings).preview().len(),
+                shown
+            );
+        }
+    }
+
+    /// The statistics count pieces as the bag deals them, so a piece swapped out
+    /// of hold is not counted a second time.
+    #[test]
+    fn piece_counts_follow_the_bag_not_the_hold_slot() {
+        let total = |game: &ModernGame| {
+            PieceKind::ALL
+                .iter()
+                .map(|&k| game.piece_count(k))
+                .sum::<u32>()
+        };
+        let mut game = ModernGame::new(1);
+        let first = game.current().unwrap().kind;
+        assert_eq!(game.piece_count(first), 1);
+        assert_eq!(total(&game), 1);
+
+        let mut hold = idle();
+        hold.hold = true;
+        // The first hold deals a fresh piece from the bag.
+        game.tick(hold);
+        assert_eq!(total(&game), 2);
+
+        // Locking deals the next; holding again brings `first` back out of the
+        // slot, which deals nothing.
+        game.tick(drop_input());
+        assert_eq!(total(&game), 3);
+        game.tick(hold);
+        assert_eq!(game.current().unwrap().kind, first);
+        assert_eq!(total(&game), 3);
     }
 
     #[test]

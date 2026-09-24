@@ -14,8 +14,9 @@ use std::collections::VecDeque;
 
 use crate::engine::piece::PieceKind;
 
-/// How many upcoming pieces the preview queue holds.
-pub const PREVIEW_LEN: usize = 5;
+/// The longest preview queue a player can ask for. Guideline games show up to
+/// six (Tetris DS, Tetris 99), so the queue always holds at least that many.
+pub const MAX_PREVIEW: usize = 6;
 
 #[derive(Debug)]
 pub struct SevenBag {
@@ -42,7 +43,7 @@ impl SevenBag {
     }
 
     fn refill_to_preview(&mut self) {
-        while self.queue.len() <= PREVIEW_LEN {
+        while self.queue.len() <= MAX_PREVIEW {
             let mut next = PieceKind::ALL;
             next.shuffle(&mut self.rng);
             self.queue.extend(next);
@@ -60,7 +61,7 @@ impl SevenBag {
 
     /// The upcoming pieces, spanning bag boundaries transparently.
     pub fn preview(&self) -> Vec<PieceKind> {
-        self.queue.iter().copied().take(PREVIEW_LEN).collect()
+        self.queue.iter().copied().take(MAX_PREVIEW).collect()
     }
 }
 
@@ -143,7 +144,7 @@ mod tests {
     fn the_preview_shows_the_pieces_that_actually_arrive() {
         let mut bag = SevenBag::from_seed(11);
         let preview = bag.preview();
-        assert_eq!(preview.len(), PREVIEW_LEN);
+        assert_eq!(preview.len(), MAX_PREVIEW);
         for expected in preview {
             assert_eq!(bag.next_piece(), expected);
         }
@@ -153,7 +154,7 @@ mod tests {
     fn the_preview_stays_full_across_bag_boundaries() {
         let mut bag = SevenBag::from_seed(3);
         for _ in 0..50 {
-            assert_eq!(bag.preview().len(), PREVIEW_LEN);
+            assert_eq!(bag.preview().len(), MAX_PREVIEW);
             bag.next_piece();
         }
     }

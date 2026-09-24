@@ -15,6 +15,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use crate::background::scenes::SceneChoice;
 use crate::background::BackgroundKind;
 use crate::config::{Config, MAX_LINE_CLEAR_FRAMES};
+use crate::engine::modern::bag::MAX_PREVIEW;
 use crate::game::Mode;
 use crate::input::action::Action;
 pub use crate::input::action::MenuInput;
@@ -166,6 +167,8 @@ pub enum OptionRow {
     Das,
     Arr,
     Ghost,
+    /// Modern only: NES previews exactly one piece.
+    Previews,
     /// Modern only: NES's line-clear delay is part of its ruleset.
     LineClear,
     Theme,
@@ -177,6 +180,9 @@ pub enum OptionRow {
     DimBackground,
     Bind(Action),
     MenuBind(MenuInput),
+    /// Puts every setting back to its default. Takes a second confirm, since
+    /// it throws away bindings too.
+    ResetDefaults,
 }
 
 /// A binding being captured: a gameplay action or a menu input. The two are
@@ -214,6 +220,9 @@ pub struct OptionsMenu {
     pub rebinding: Option<Rebind>,
     /// Feedback for the last action — a rejected conflicting key, mostly.
     pub notice: Option<String>,
+    /// Set by a first confirm on the reset row; a second one resets, and
+    /// anything else stands it down.
+    pub confirming_reset: bool,
 }
 
 /// What the caller should do after handing the menu an input.
@@ -226,33 +235,49 @@ pub enum OptionsOutcome {
 }
 
 impl OptionsMenu {
-    /// The rows on offer, which follow the selected mode: modern's tuning knobs
-    /// are absent in NES mode because NES's equivalents are fixed by the ruleset.
-    pub fn rows(config: &Config) -> Vec<OptionRow> {
-        let mut rows = vec![OptionRow::Mode, OptionRow::StartLevel];
+    /// The rows on offer, in the groups the screen separates with a rule: game
+    /// settings, looks, gameplay keys, menu keys, and the reset. The rows follow
+    /// the selected mode: modern's tuning knobs are absent in NES mode because
+    /// NES's equivalents are fixed by the ruleset.
+    pub fn sections(config: &Config) -> Vec<Vec<OptionRow>> {
+        let mut game = vec![OptionRow::Mode, OptionRow::StartLevel];
         if config.mode == Mode::Modern {
-            rows.extend([
+            game.extend([
                 OptionRow::Das,
                 OptionRow::Arr,
                 OptionRow::Ghost,
+                OptionRow::Previews,
                 OptionRow::LineClear,
             ]);
         }
         // The visual axes are independent of the ruleset, so they are offered in
         // both modes.
-        rows.extend([OptionRow::Theme, OptionRow::Skin, OptionRow::Border]);
-        rows.push(OptionRow::Background);
+        let mut looks = vec![
+            OptionRow::Theme,
+            OptionRow::Skin,
+            OptionRow::Border,
+            OptionRow::Background,
+        ];
         // The scene picker is meaningless unless the scene background is showing.
         if config.background == BackgroundKind::Scene {
-            rows.push(OptionRow::Scene);
+            looks.push(OptionRow::Scene);
         }
         // Blank draws nothing, so there is nothing to dim.
         if config.background != BackgroundKind::Blank {
-            rows.push(OptionRow::DimBackground);
+            looks.push(OptionRow::DimBackground);
         }
-        rows.extend(Action::ALL.map(OptionRow::Bind));
-        rows.extend(MenuInput::ALL.map(OptionRow::MenuBind));
-        rows
+        vec![
+            game,
+            looks,
+            Action::ALL.map(OptionRow::Bind).to_vec(),
+            MenuInput::ALL.map(OptionRow::MenuBind).to_vec(),
+            vec![OptionRow::ResetDefaults],
+        ]
+    }
+
+    /// Every row, top to bottom, as the cursor walks them.
+    pub fn rows(config: &Config) -> Vec<OptionRow> {
+        Self::sections(config).concat()
     }
 
     pub fn row(&self, config: &Config) -> OptionRow {
@@ -263,6 +288,25 @@ impl OptionsMenu {
     pub fn navigate(&mut self, input: MenuInput, config: &mut Config) -> OptionsOutcome {
         let rows = Self::rows(config);
         let row = rows[self.selected.min(rows.len() - 1)];
+
+        // Only a confirm straight after the first one resets.
+        let confirming_reset = std::mem::take(&mut self.confirming_reset);
+        if row == OptionRow::ResetDefaults && input == MenuInput::Confirm {
+            if !confirming_reset {
+                self.confirming_reset = true;
+                self.notice = Some("press confirm again to reset everything".into());
+                return OptionsOutcome::Stay;
+            }
+            *config = Config {
+                // The remembered high-score name is not a setting on this screen.
+                player_name: std::mem::take(&mut config.player_name),
+                ..Config::default()
+            };
+            // The default mode may have fewer rows; stay on this one.
+            self.selected = Self::rows(config).len() - 1;
+            self.notice = Some("all settings reset to defaults".into());
+            return OptionsOutcome::Changed;
+        }
 
         match input {
             MenuInput::Up => {
@@ -323,6 +367,13 @@ impl OptionsMenu {
                 config.arr_frames = nudge(config.arr_frames, forward);
             }
             OptionRow::Ghost => config.ghost = !config.ghost,
+            OptionRow::Previews => {
+                config.previews = if forward {
+                    (config.previews + 1).min(MAX_PREVIEW)
+                } else {
+                    config.previews.saturating_sub(1).max(1)
+                };
+            }
             OptionRow::LineClear => {
                 config.line_clear_frames = step_line_clear(config.line_clear_frames, forward);
             }
@@ -337,8 +388,11 @@ impl OptionsMenu {
                 self.selected = self.selected.min(len - 1);
             }
             OptionRow::Scene => config.scene = cycle(config.scene, &SceneChoice::ALL, forward),
-            // Rebinding is driven by `capture`, not by the direction keys.
-            OptionRow::Bind(_) | OptionRow::MenuBind(_) => return OptionsOutcome::Stay,
+            // Rebinding is driven by `capture`, and resetting by `navigate`'s
+            // confirm, not by the direction keys.
+            OptionRow::Bind(_) | OptionRow::MenuBind(_) | OptionRow::ResetDefaults => {
+                return OptionsOutcome::Stay
+            }
         }
         OptionsOutcome::Changed
     }
@@ -611,6 +665,7 @@ mod tests {
         assert!(!nes.contains(&OptionRow::Das));
         assert!(!nes.contains(&OptionRow::Ghost));
         assert!(!nes.contains(&OptionRow::LineClear));
+        assert!(!nes.contains(&OptionRow::Previews));
 
         config.mode = Mode::Modern;
         let modern = OptionsMenu::rows(&config);
@@ -618,6 +673,7 @@ mod tests {
         assert!(modern.contains(&OptionRow::Arr));
         assert!(modern.contains(&OptionRow::Ghost));
         assert!(modern.contains(&OptionRow::LineClear));
+        assert!(modern.contains(&OptionRow::Previews));
     }
 
     #[test]
@@ -652,7 +708,7 @@ mod tests {
 
         // The same cursor, now against the shorter list.
         modern.mode = Mode::Nes;
-        assert!(matches!(menu.row(&modern), OptionRow::MenuBind(_)));
+        assert_eq!(menu.row(&modern), OptionRow::ResetDefaults);
         menu.navigate(MenuInput::Down, &mut modern);
         assert!(menu.selected < OptionsMenu::rows(&modern).len());
     }
@@ -712,6 +768,92 @@ mod tests {
             menu.navigate(MenuInput::Right, &mut config);
         }
         assert_eq!(config.arr_frames, MAX_DELAY_FRAMES);
+    }
+
+    #[test]
+    fn options_are_grouped_game_looks_game_keys_menu_keys_then_reset() {
+        let sections = OptionsMenu::sections(&config(Mode::Modern));
+        assert_eq!(sections.len(), 5);
+        assert!(sections[0].contains(&OptionRow::Mode));
+        assert!(sections[0].contains(&OptionRow::Previews));
+        assert!(sections[1].contains(&OptionRow::Theme));
+        assert!(sections[1].contains(&OptionRow::Background));
+        assert!(sections[2].iter().all(|r| matches!(r, OptionRow::Bind(_))));
+        assert!(sections[3]
+            .iter()
+            .all(|r| matches!(r, OptionRow::MenuBind(_))));
+        assert_eq!(sections[4], [OptionRow::ResetDefaults]);
+    }
+
+    fn on_reset_row(config: &Config) -> OptionsMenu {
+        OptionsMenu {
+            selected: OptionsMenu::rows(config).len() - 1,
+            ..Default::default()
+        }
+    }
+
+    /// Resetting throws away bindings, so one stray confirm must not do it.
+    #[test]
+    fn reset_takes_two_confirms_in_a_row() {
+        let mut config = config(Mode::Modern);
+        config.ghost = false;
+        config.player_name = "ada".into();
+        config.set_binding(Action::Hold, &[KeyCode::Char('x')]);
+        let mut menu = on_reset_row(&config);
+
+        assert_eq!(
+            menu.navigate(MenuInput::Confirm, &mut config),
+            OptionsOutcome::Stay
+        );
+        assert!(!config.ghost, "nothing changes on the first confirm");
+
+        assert_eq!(
+            menu.navigate(MenuInput::Confirm, &mut config),
+            OptionsOutcome::Changed
+        );
+        let defaults = Config::default();
+        assert_eq!(config.mode, defaults.mode);
+        assert!(config.ghost);
+        assert_eq!(config.bindings, defaults.bindings);
+        assert_eq!(config.player_name, "ada", "the remembered name is kept");
+        assert_eq!(
+            menu.row(&config),
+            OptionRow::ResetDefaults,
+            "the cursor stays on the reset row though NES has fewer rows"
+        );
+    }
+
+    #[test]
+    fn anything_between_the_two_confirms_calls_the_reset_off() {
+        let mut config = config(Mode::Modern);
+        config.ghost = false;
+        let mut menu = on_reset_row(&config);
+
+        menu.navigate(MenuInput::Confirm, &mut config);
+        menu.navigate(MenuInput::Up, &mut config);
+        menu.navigate(MenuInput::Down, &mut config);
+        menu.navigate(MenuInput::Confirm, &mut config);
+        assert!(!config.ghost, "the up/down should have cancelled the reset");
+    }
+
+    #[test]
+    fn the_next_queue_length_stops_at_one_and_six() {
+        let mut config = config(Mode::Modern);
+        let rows = OptionsMenu::rows(&config);
+        let mut menu = OptionsMenu {
+            selected: rows.iter().position(|r| *r == OptionRow::Previews).unwrap(),
+            ..Default::default()
+        };
+        assert_eq!(config.previews, 5, "five by default");
+
+        for _ in 0..10 {
+            menu.navigate(MenuInput::Right, &mut config);
+        }
+        assert_eq!(config.previews, MAX_PREVIEW);
+        for _ in 0..10 {
+            menu.navigate(MenuInput::Left, &mut config);
+        }
+        assert_eq!(config.previews, 1, "the queue never disappears entirely");
     }
 
     /// Zero is a real setting here — the instant clear — unlike DAS and ARR.

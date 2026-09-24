@@ -24,7 +24,7 @@ Done so far:
   flash, scoring and
   level progression
 - **Modern (Guideline) ruleset**: SRS with both wall-kick tables, 7-bag with a
-  preview queue, hold, ghost piece, hard drop, 500ms lock delay with the 15-reset
+  one-to-six piece preview queue, hold, ghost piece, hard drop, 500ms lock delay with the 15-reset
   cap, T-spin and mini detection including the fifth-kick promotion, and scoring
   with back-to-back, combos and perfect clears, plus an optional line-clear delay
 - Fixed 60 Hz tick loop, rebindable gameplay and menu keys, Kitty keyboard-protocol
@@ -104,12 +104,17 @@ scored. Topping out is, and a run that makes its mode's top ten asks for a name.
 ## Options
 
 Everything on the options screen is written to the config file as soon as it
-changes:
+changes. The screen is split by rules into game settings, looks, gameplay keys,
+menu keys and the reset:
 
 - **Game mode** — which ruleset `Play` starts
 - **Starting level** — remembered separately per mode (NES 0-29, modern 1-20)
 - **DAS / ARR / ghost piece** — modern only. NES's equivalents are fixed by its
   ruleset, so they are not offered
+- **Next pieces** — modern only: how many upcoming pieces the queue shows, 1 to
+  6, default 5. Guideline games differ here too: Puyo Puyo Tetris shows 5, Tetris
+  99 and Tetris DS show 6, and TETR.IO (1-6) and Jstris (0-5) let you choose. The
+  next box grows and shrinks to fit. NES always previews exactly one
 - **Line clear delay** — modern only: how long cleared rows stay up, erasing
   from the centre out, before the rows above drop. `instant` (the default) up to
   60 frames in steps of 5. Games differ here: the Guideline sets no value,
@@ -146,12 +151,15 @@ changes:
   press the key. The two lists are separate, so one key can both rotate and
   confirm; within a list, a key already bound to something else is refused rather
   than silently stolen
+- **Reset all to defaults** — every setting and binding back to its default.
+  It takes a second confirm, and anything pressed in between calls it off. The
+  remembered high-score name and the score tables are left alone
 
 ## Files
 
 | Path | Contents |
 |---|---|
-| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, line clear delay, theme, skin, border, bold text, background and its dimming, gameplay and menu bindings |
+| `~/.config/tetris-tui/config.toml` | mode, starting levels, DAS/ARR, ghost, next pieces, line clear delay, theme, skin, border, bold text, background and its dimming, gameplay and menu bindings |
 | `~/.local/share/tetris-tui/scores.toml` | two top-10 tables, NES and modern kept apart |
 
 Both are plain TOML and meant to be hand-editable, so a mistake costs only
@@ -160,6 +168,27 @@ is dropped, rather than either file being thrown away. Whenever anything had to
 be dropped, the file as it was is copied to `config.toml.bak` or
 `scores.toml.bak` before the game can write over it. A hand-sorted score table
 is re-sorted on load, and both files are written atomically.
+
+## Playfield
+
+Both modes use the same arrangement, so switching rulesets moves nothing:
+
+```
+┌ HOLD ──┐┌ MODERN ──┐┌ NEXT ──┐
+└────────┘│          ││        │
+          │          │└────────┘
+┌ STATS ─┐│          │
+│        ││          │┌ SCORE ─┐
+└────────┘└──────────┘└────────┘
+```
+
+Hold and next line up with the top of the board, stats and score with its
+bottom. Stats holds the level, lines, combo or back-to-back (modern), and how
+many of each piece the run has dealt. NES has no hold, so its top-left corner
+is left to the background.
+
+As the terminal narrows, the left column goes first, and level and lines move to
+the board's bottom edge. Then the right column goes, and the score joins them.
 
 ## Controls
 
@@ -181,7 +210,7 @@ a missing feature, and those keys simply do nothing there.
 ## Input timing
 
 Both rulesets depend on knowing how long a key is *held*, which terminals do not
-all report. The HUD shows which mode you are in:
+all report. The bottom edge of the stats panel shows which mode you are in:
 
 - **precise input** — the terminal supports the Kitty keyboard protocol, so real
   press/release events arrive and DAS is frame-accurate. kitty, WezTerm, foot and

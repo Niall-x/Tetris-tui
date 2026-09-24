@@ -188,6 +188,7 @@ fn option_value(
         OptionRow::Das => format!("{} frames", config.das_frames),
         OptionRow::Arr => format!("{} frames", config.arr_frames),
         OptionRow::Ghost => on_off(config.ghost),
+        OptionRow::Previews => config.previews.to_string(),
         OptionRow::LineClear => match config.line_clear_frames {
             0 => "instant".to_string(),
             frames => format!("{frames} frames"),
@@ -198,6 +199,7 @@ fn option_value(
         OptionRow::DimBackground => on_off(config.dim_background),
         OptionRow::Background => config.background.label().to_string(),
         OptionRow::Scene => config.scene.label().to_string(),
+        OptionRow::ResetDefaults => String::new(),
         OptionRow::Bind(action) => key_list(keymap.keys_for(action), "unbound"),
         // The fixed key always works too, so a menu input is never unbound.
         OptionRow::MenuBind(input) => {
@@ -223,6 +225,7 @@ fn option_label(row: OptionRow) -> String {
         OptionRow::Das => "DAS".into(),
         OptionRow::Arr => "ARR".into(),
         OptionRow::Ghost => "Ghost piece".into(),
+        OptionRow::Previews => "Next pieces".into(),
         OptionRow::LineClear => "Line clear delay".into(),
         OptionRow::Theme => "Colour theme".into(),
         OptionRow::Skin => "Tetromino skin".into(),
@@ -232,11 +235,33 @@ fn option_label(row: OptionRow) -> String {
         OptionRow::Scene => "  scene".into(),
         OptionRow::Bind(action) => action.label().to_string(),
         OptionRow::MenuBind(input) => input.label().to_string(),
+        OptionRow::ResetDefaults => "Reset all to defaults".into(),
     }
+}
+
+/// A line of the options list: a row, or the rule between two groups of rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OptionsItem {
+    Row(OptionRow),
+    Rule,
+}
+
+/// The options list as drawn, with a rule between each group of rows and the
+/// next. The rules take up lines but the cursor steps over them.
+fn options_items(config: &Config) -> Vec<OptionsItem> {
+    let mut items = Vec::new();
+    for section in OptionsMenu::sections(config) {
+        if !items.is_empty() {
+            items.push(OptionsItem::Rule);
+        }
+        items.extend(section.into_iter().map(OptionsItem::Row));
+    }
+    items
 }
 
 pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config: &Config) {
     let rows = OptionsMenu::rows(config);
+    let items = options_items(config);
     let keymap = config.keymap();
     let menu_keys = config.menu_keymap();
     let visuals = config.visuals();
@@ -247,8 +272,8 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
             .border_style(Style::default().fg(Color::DarkGray)),
     );
 
-    let width = 44.min(area.width);
-    let height = (rows.len() as u16 + 5).min(area.height);
+    let width = 46.min(area.width);
+    let height = (items.len() as u16 + 5).min(area.height);
     let rect = centered(area, width, height);
     let interior = block.inner(rect);
     frame.render_widget(Clear, rect);
@@ -258,28 +283,45 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
         return;
     }
 
+    // Where the cursor's row sits among the drawn lines, rules included.
+    let selected_item = items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| **item != OptionsItem::Rule)
+        .nth(menu.selected.min(rows.len() - 1))
+        .map_or(0, |(index, _)| index);
+
     // Two lines at the bottom are reserved for the hint and any notice.
     let list_height = interior.height.saturating_sub(2).max(1) as usize;
-    let (start, end) = window(rows.len(), menu.selected, list_height);
+    let (start, end) = window(items.len(), selected_item, list_height);
 
+    let rule = if visuals.ascii_interface() {
+        "-"
+    } else {
+        "─"
+    };
     let mut lines: Vec<Line> = Vec::new();
-    for (index, row) in rows[start..end].iter().enumerate() {
-        let index = start + index;
-        let selected = index == menu.selected;
-        let label = option_label(*row);
+    for (index, item) in items[start..end].iter().enumerate() {
+        let OptionsItem::Row(row) = *item else {
+            lines.push(dim(rule.repeat(interior.width as usize)));
+            continue;
+        };
+        let selected = start + index == selected_item;
+        let label = option_label(row);
         let awaiting_key = menu.rebinding.is_some() && menu.rebinding == row.rebind();
         let value = if awaiting_key {
             "press a key…".to_string()
         } else {
-            option_value(*row, config, &keymap, &menu_keys)
+            option_value(row, config, &keymap, &menu_keys)
         };
         // Key names include arrows, which an ASCII setting spells out.
         let value = visuals.text(&value).into_owned();
 
-        // Right-align the value against the panel edge so the column reads.
+        // Right-align the value so the column reads, keeping the same two
+        // columns clear on the right as the cursor marker takes on the left.
         let pad = (interior.width as usize)
-            .saturating_sub(2 + label.chars().count() + value.chars().count());
-        let text = format!("{label}{}{value}", " ".repeat(pad));
+            .saturating_sub(4 + label.chars().count() + value.chars().count());
+        let text = format!("{label}{}{value}  ", " ".repeat(pad));
         lines.push(menu_line(&text, selected));
     }
 
@@ -287,6 +329,7 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
         lines.push(Line::from(""));
     }
 
+    let hints = lines.len();
     if let Some(notice) = &menu.notice {
         lines.push(Line::from(Span::styled(
             visuals.text(notice).into_owned(),
@@ -297,10 +340,15 @@ pub fn render_options(frame: &mut Frame, area: Rect, menu: &OptionsMenu, config:
     } else if rows[menu.selected.min(rows.len() - 1)] == OptionRow::Background {
         // §9: the background list is the one row whose choices need explaining.
         lines.push(dim(config.background.description()));
+    } else if rows[menu.selected.min(rows.len() - 1)] == OptionRow::ResetDefaults {
+        lines.push(dim("settings and key bindings, not scores"));
     } else {
         lines.push(dim(visuals.text("←→ change · enter rebind · esc back")));
     }
     lines.push(dim("changes are saved as you make them"));
+    for line in &mut lines[hints..] {
+        *line = std::mem::take(line).centered();
+    }
 
     // Deliberately unwrapped: the rows are padded to the panel width, and wrapping
     // would trim that padding away and break the value column.
@@ -559,7 +607,7 @@ mod tests {
             rebinding: Some(crate::menu::Rebind::Game(
                 crate::input::action::Action::MoveLeft,
             )),
-            notice: None,
+            ..Default::default()
         };
         let rendered = draw(80, 30, |frame| {
             render_options(frame, frame.area(), &menu, &config)
@@ -617,14 +665,17 @@ mod tests {
         let config = Config::default();
         let rows = OptionsMenu::rows(&config);
         let menu = OptionsMenu {
-            selected: rows.len() - 1, // Quit, the last rebind row
+            selected: rows.len() - 1, // the reset row, at the very bottom
             ..Default::default()
         };
         let rendered = draw(60, 12, |frame| {
             render_options(frame, frame.area(), &menu, &config)
         });
         println!("{rendered}");
-        assert!(rendered.contains("Quit"), "the selected row is visible");
+        assert!(
+            rendered.contains("Reset all to defaults"),
+            "the selected row is visible"
+        );
         assert!(
             !rendered.contains("Game mode"),
             "the top of the list has scrolled away"
